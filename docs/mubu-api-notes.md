@@ -1,0 +1,81 @@
+# Notes on the Mubu web API
+
+These notes document what was reverse-engineered from the Mubu web client so that maintainers
+can repair this project if Mubu changes things. They describe an **unofficial** API; there is
+no vendor support for anything on this page.
+
+## Transport
+
+* Base URL: `https://api2.mubu.com/v3/api`
+* Every request is `POST` with a JSON body.
+* Response envelope: `{"code": 0, "data": {...}, "msg": "..."}`. `code == 0` means success.
+  Note that failures still come back with HTTP 200.
+
+## Required headers
+
+```
+Content-Type: application/json;charset=UTF-8
+Jwt-Token: <token>            # after login
+data-unique-id: <uuid>        # stable per client session
+x-session-id: <uuid>          # stable per client session
+x-request-id: <uuid>          # new per request
+x-reg-entrance: https://mubu.com/app
+Origin: https://mubu.com
+Referer: https://mubu.com/
+```
+
+Missing some of these makes endpoints such as `/list/import_doc` fail with
+`code: 17, msg: "illegal request"` even though the token is perfectly valid.
+
+## Endpoints used by this project
+
+| Purpose | Endpoint | Body |
+| --- | --- | --- |
+| Log in | `/user/phone_login` | `{phone, password, callbackType: 0}` → `{token, id, name, memberId?}` |
+| List a folder | `/list/get` | `{folderId}` → `{folders, documents, ...}` (`"0"` is the root) |
+| Read a document | `/document/edit/get` | `{docId, password: "", isFromDocDir: true}` → `{definition, baseVersion, ...}` |
+| Create a document | `/list/create_doc` | `{folderId, name, type: 0}` → `{id}` — **creates an empty document** |
+| Create a document **with content** | `/list/import_doc` | `{name, folderId, itemCount, define}` → `{id}` |
+| Create a folder | `/list/create_folder` | `{folderId, name}` → `{folder, id}` |
+
+The token (JWT) is valid for roughly two hours; the login response's `memberId` is only needed
+for the collaborative-editing path, which this project does not use.
+
+## Writing document content
+
+`POST /list/create_doc` **ignores** `content` — passing Markdown or a node tree there silently
+produces an empty document (this is why other third-party projects that advertise "Markdown
+import" through that endpoint do not actually work).
+
+The web client's import flow instead parses the file **client-side** and uploads a node tree:
+
+```json
+{
+  "name": "标题",
+  "folderId": "0",
+  "itemCount": 3,
+  "define": "{\"nodes\":[{\"id\":\"root\",\"text\":\"标题\",\"children\":[{\"id\":\"n1\",\"text\":\"要点\",\"children\":[]}]}]}"
+}
+```
+
+Node fields: `id` (any unique string), `text`, `children`, `note`, `finish` (checkbox state).
+The first node's `text` becomes the document title node; the document name is the separate
+`name` field.
+
+## Why there is no "update document" tool
+
+Editing an existing document goes through a WebSocket collaboration protocol
+(`/colla/register` issues a ticket, then changes are exchanged as changesets;
+`/changeset/fetch` pulls missed ones). There is no simple HTTP call to replace a document body,
+and reimplementing the collaboration protocol would risk corrupting user data — so this project
+deliberately stops at creating new documents.
+
+## Error codes seen in practice
+
+| code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `2` | Login expired / not signed in |
+| `6` | Permission error (missing or encrypted document, wrong id) |
+| `17` | Illegal request (missing headers, or the endpoint changed) |
+| `1204` | Phone number or password incorrect |

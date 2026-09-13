@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 本地凭据（正常情况下在 ~/.mubu，这里再兜一层）
+credentials.json
+credentials.dpapi
+token.json
+*.bak
+
+# 测试临时目录
+.tmp-tests/
