@@ -177,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    server_module.configure_stdio(protocol=False)
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     # 不带子命令时当作 serve，这样 MCP 客户端可以直接用 `-m mubu_web_mcp`

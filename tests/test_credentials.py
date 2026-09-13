@@ -26,6 +26,12 @@ class CredentialTests(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        # 关掉系统级后端（Windows DPAPI / macOS 钥匙串 / Linux Secret Service）：
+        # 否则测试会写到开发者真实的钥匙串里，且用例之间互相污染。
+        for name in ("_is_windows", "_keychain_available", "_secret_tool_available"):
+            backend = mock.patch.object(credentials, name, return_value=False)
+            backend.start()
+            self.addCleanup(backend.stop)
         os.environ.pop("MUBU_PHONE", None)
         os.environ.pop("MUBU_PASSWORD", None)
         self.addCleanup(lambda: (os.environ.pop("MUBU_PHONE", None),
@@ -57,6 +63,14 @@ class CredentialTests(unittest.TestCase):
     def test_unknown_backend_rejected(self):
         with self.assertRaises(credentials.CredentialsError):
             credentials.store_credentials("13800000000", "pw", backend="magic")
+
+    def test_explicit_unavailable_backend_rejected(self):
+        for backend in ("dpapi", "keychain", "secret-service"):
+            with self.assertRaises(credentials.CredentialsError):
+                credentials.store_credentials("13800000000", "pw", backend=backend)
+
+    def test_default_backend_falls_back_to_file(self):
+        self.assertEqual(credentials.default_backend(), "plaintext-file")
 
     def test_delete_removes_files(self):
         credentials.store_credentials("13800000000", "pw", backend="plaintext-file")

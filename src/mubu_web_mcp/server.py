@@ -29,6 +29,27 @@ def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
 
 
+def configure_stdio(protocol: bool) -> None:
+    """让输出在编码受限的环境下也不会崩。
+
+    ``protocol=True`` 时（MCP 的 stdio 传输）强制 UTF-8：MCP 规定消息必须是 UTF-8，
+    而 Windows 在管道里默认会用本地代码页（英文系统是 cp1252），
+    不改的话只要工具返回中文就会 UnicodeEncodeError。
+    交互式运行时保持控制台原有编码，只把错误处理改成不抛异常，
+    这样中文控制台显示仍然正常。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if protocol and not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            else:
+                stream.reconfigure(errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 _client: MubuClient | None = None
 
 
@@ -288,6 +309,7 @@ def handle(request: dict[str, Any], read_only: bool = False) -> dict[str, Any] |
 
 
 def serve(read_only: bool = False) -> int:
+    configure_stdio(protocol=True)
     read_only = read_only_mode(read_only)
     log(f"v{__version__} 已启动（stdio{', 只读模式' if read_only else ''}）")
     for line in sys.stdin:
