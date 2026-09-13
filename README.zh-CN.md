@@ -25,15 +25,55 @@
 | 工具 | 作用 |
 | --- | --- |
 | `mubu_whoami` | 查看当前账号和登录状态 |
-| `mubu_list` | 列出某个目录下的文件夹和文档 |
-| `mubu_get_doc` | 读文档，输出 Markdown 大纲（也可输出原始 JSON） |
+| `mubu_list` | 列出某个目录下的文件夹和文档（**文字 + 结构化数据**） |
+| `mubu_get_doc` | 读文档，输出 Markdown 大纲或完整 JSON |
+| `mubu_get_doc_json` | 结构化读取，大文档用**游标分页** |
 | `mubu_search` | 按名称搜索文件夹和文档，可选搜正文 |
+| `mubu_inspect` | **脱敏结构报告**（字段名、计数、疑似图片/链接字段） |
+| `mubu_diagnostics` | 请求/重试/限流计数与最近错误码 |
 | `mubu_create_doc` | 用 Markdown **新建**文档（支持标题、缩进列表、`- [x]` 勾选、`> 备注`） |
 | `mubu_create_folder` | 新建文件夹 |
 
 典型用法："把刚才讨论的结论整理成大纲存到幕布"、"找一下我之前记的那篇关于 XX 的笔记"。
 
 Markdown 与幕布大纲的转换是往返稳定的：写进去再读回来，标题、层级、勾选、备注逐字节一致。
+
+### 结构化输出
+
+面向程序消费的工具会返回 `structuredContent` 并声明 `outputSchema`，调用方不需要解析中文列表文本：
+
+```json
+{
+  "folderId": "0",
+  "folders": [{"id": "f1", "name": "工作", "parentId": "0", "order": 0,
+               "updatedAt": 1789301039119, "type": "folder"}],
+  "documents": [{"id": "d1", "name": "会议记录", "parentId": "0", "order": 2,
+                 "updatedAt": 1789301039481, "type": "document"}]
+}
+```
+
+底层接口的原始字段会保留，另外补上 `parentId`、`order`、`updatedAt`、`type`。
+大文档用 `mubu_get_doc_json` 游标分页，**任何情况下都不会返回被截断的 JSON**。
+
+---
+
+## 本地备份（内容不经过 AI 模型）
+
+MCP 工具用于低频对话查询，但被读到的内容会进入模型上下文。要备份整个账号，用命令行：
+它只在你本机和幕布之间读写，中间没有模型。
+
+```bash
+mubu-web-mcp backup --out ~/mubu-backup                 # 增量 + 断点续传
+mubu-web-mcp backup --out ~/mubu-backup --folder f1     # 只备份某个目录
+mubu-web-mcp backup --out ~/mubu-backup --dry-run       # 只列出将要备份的内容
+mubu-web-mcp backup --out ~/mubu-backup --assets        # 同时下载图片（实验性）
+```
+
+特性：递归索引与数量上限；**增量**（修改时间没变的文档连正文都不拉取）；**断点续传**
+（每处理完一个目录就落盘状态，Ctrl+C 后重跑继续）；输出 Markdown 和带 SHA-256、版本号的
+`manifest.json`；默认 2 秒请求间隔；结构上只读——没有任何删除、改名、移动、覆盖路径。
+
+`--assets` 为实验性功能，只允许 `*.mubu.com` 域名，重定向后再次校验，绝不把 JWT 发给非幕布域名。
 
 ---
 

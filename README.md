@@ -29,15 +29,75 @@ Give an MCP-capable AI agent these tools and it can, in a normal conversation:
 | Tool | What it does |
 | --- | --- |
 | `mubu_whoami` | Show the signed-in account and login state |
-| `mubu_list` | List folders and documents in a folder |
-| `mubu_get_doc` | Read a document, returned as a Markdown outline (or raw JSON) |
+| `mubu_list` | List folders and documents in a folder (**text + structured data**) |
+| `mubu_get_doc` | Read a document as a Markdown outline, or complete JSON |
+| `mubu_get_doc_json` | Structured read with **cursor paging** for large documents |
 | `mubu_search` | Search folder/document names, optionally inside document bodies |
+| `mubu_inspect` | **Redacted structure report** (field names, counts, suspected image/link fields) |
+| `mubu_diagnostics` | Request/retry/rate-limit counters and last error code |
 | `mubu_create_doc` | Create a **new** document from Markdown (headings, nested bullets, `- [x]` checkboxes, `> notes`) |
 | `mubu_create_folder` | Create a new folder |
 
 Typical use: *"summarise this discussion into an outline and save it to Mubu"*, or *"find the note I wrote about X and use it as context"*.
 
 Markdown ↔ Mubu conversion is round-trip stable: import a document, read it back, and you get byte-identical Markdown for headings, nesting, checkboxes and notes.
+
+### Structured output
+
+The tools that are meant to be consumed by programs return `structuredContent` with a declared
+`outputSchema`, so nothing has to parse human-facing Chinese text:
+
+```json
+{
+  "folderId": "0",
+  "folders": [
+    {"id": "f1", "name": "工作", "parentId": "0", "order": 0, "updatedAt": 1789301039119,
+     "type": "folder", "updateTime": 1789301039119}
+  ],
+  "documents": [
+    {"id": "d1", "name": "会议记录", "parentId": "0", "order": 2, "updatedAt": 1789301039481,
+     "type": "document", "updateTime": 1789301039481}
+  ]
+}
+```
+
+Raw API fields are preserved; `parentId`, `order`, `updatedAt` and `type` are added on top.
+
+Large documents use `mubu_get_doc_json` with a cursor instead of ever returning truncated JSON:
+
+```json
+{"docId": "d1", "totalTopLevelNodes": 120, "offset": 0, "limit": 20,
+ "hasMore": true, "nextCursor": "20", "nodes": [ ... ]}
+```
+
+---
+
+## Local backup (content never touches the model)
+
+The MCP tools are for low-frequency chat queries, where whatever is read ends up in the model's
+context. For backing up an account, use the CLI instead — it reads from Mubu and writes to your
+disk, with no model in the loop:
+
+```bash
+mubu-web-mcp backup --out ~/mubu-backup                 # incremental, resumable
+mubu-web-mcp backup --out ~/mubu-backup --folder f1     # scope to one folder
+mubu-web-mcp backup --out ~/mubu-backup --dry-run       # list what would be backed up
+mubu-web-mcp backup --out ~/mubu-backup --assets        # also fetch images (experimental)
+```
+
+What it gives you:
+
+* recursive folder index, with `--depth` / `--max-folders` / `--max-docs` limits;
+* **incremental**: a document whose `updateTime` is unchanged is skipped without even fetching
+  it (one listing call per folder is all it costs);
+* **resumable**: progress is written after every folder, so `Ctrl+C` + rerun continues where it
+  stopped;
+* Markdown files plus a `manifest.json` with per-document size, SHA-256, version and asset list;
+* a conservative default interval of 2 s, and it is read-only by construction — no delete,
+  rename, move or overwrite path exists.
+
+Assets (`--assets`) are experimental and restricted to `*.mubu.com` hostnames, re-validated
+after redirects; the JWT is never sent to a non-Mubu host.
 
 ---
 
@@ -159,8 +219,12 @@ For the full threat model see [SECURITY.md](SECURITY.md).
 | `MUBU_READ_ONLY` | off | `1` disables all create tools |
 | `MUBU_HOME` | `~/.mubu` | Where credentials and the token cache live |
 | `MUBU_TIMEOUT` | `20` | HTTP timeout in seconds |
-| `MUBU_MIN_INTERVAL_MS` | `200` | Minimum delay between two requests (politeness) |
-| `MUBU_MAX_RETRIES` | `2` | Retries for network errors and 5xx responses |
+| `MUBU_MIN_INTERVAL_MS` | `500` | Minimum delay between two requests; shared across processes |
+| `MUBU_JITTER_MS` | `150` | Random jitter added to the interval / backoff |
+| `MUBU_MAX_RETRIES` | `2` | Retries for network errors, 5xx and rate limits |
+| `MUBU_MAX_BACKOFF_SECONDS` | `60` | Cap for any single wait (including `Retry-After`) |
+| `MUBU_PROCESS_LOCK` | on | Share the rate limit between processes via a file lock |
+| `MUBU_RATE_LIMIT_CODES` | empty | Extra business codes (inside HTTP 200) treated as rate limiting |
 
 ---
 
@@ -203,6 +267,9 @@ mubu-web-mcp selftest                  # offline smoke test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+For the detailed test/verification report (including what is verified and what is still
+pending), see [docs/verification.md](docs/verification.md).
 
 ---
 

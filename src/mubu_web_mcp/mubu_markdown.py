@@ -30,6 +30,8 @@ def _clean(text: Any) -> str:
 # --------------------------------------------------------------------------
 
 def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
     indent = "  " * level
     checked = node.get("finish")
     if checked is None:
