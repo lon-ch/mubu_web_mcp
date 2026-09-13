@@ -22,7 +22,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 APP_NAME = "mubu-web-mcp"
 
@@ -99,7 +98,7 @@ def _keychain_store(secret: str) -> None:
         raise CredentialsError(f"写入 macOS 钥匙串失败：{result.stderr.strip()}")
 
 
-def _keychain_load() -> Optional[str]:
+def _keychain_load() -> str | None:
     result = subprocess.run(
         ["security", "find-generic-password", "-a", KEYCHAIN_ACCOUNT,
          "-s", KEYCHAIN_SERVICE, "-w"],
@@ -137,7 +136,7 @@ def _secret_tool_store(secret: str) -> None:
         raise CredentialsError(f"写入 Secret Service 失败：{result.stderr.strip()}")
 
 
-def _secret_tool_load() -> Optional[str]:
+def _secret_tool_load() -> str | None:
     result = subprocess.run(
         ["secret-tool", "lookup", "service", KEYCHAIN_SERVICE,
          "account", KEYCHAIN_ACCOUNT],
@@ -172,7 +171,7 @@ def _write_private(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _load_plaintext() -> Optional[Tuple[str, str]]:
+def _load_plaintext() -> tuple[str, str] | None:
     if not CRED_JSON.exists():
         return None
     try:
@@ -188,7 +187,7 @@ def _load_plaintext() -> Optional[Tuple[str, str]]:
 # 公开接口
 # ---------------------------------------------------------------------------
 
-def available_backends() -> List[str]:
+def available_backends() -> list[str]:
     backends = ["env", "plaintext-file"]
     if _is_windows():
         backends.insert(1, "dpapi")
@@ -209,7 +208,7 @@ def default_backend() -> str:
     return "plaintext-file"
 
 
-def load_credentials() -> Tuple[str, str]:
+def load_credentials() -> tuple[str, str]:
     """按优先级读取手机号和密码。"""
     phone = (os.environ.get("MUBU_PHONE") or "").strip()
     password = os.environ.get("MUBU_PASSWORD") or ""
@@ -261,7 +260,7 @@ def load_credentials() -> Tuple[str, str]:
     )
 
 
-def store_credentials(phone: str, password: str, backend: Optional[str] = None) -> str:
+def store_credentials(phone: str, password: str, backend: str | None = None) -> str:
     """保存凭据，返回实际使用的后端名。"""
     phone = phone.strip()
     if not phone or not password:
@@ -296,9 +295,9 @@ def store_credentials(phone: str, password: str, backend: Optional[str] = None) 
     raise CredentialsError(f"未知的凭据后端：{backend}")
 
 
-def delete_credentials() -> List[str]:
+def delete_credentials() -> list[str]:
     """删除本机保存的凭据，返回被删除的后端列表。"""
-    removed: List[str] = []
+    removed: list[str] = []
     for path, name in ((CRED_DPAPI, "dpapi"), (CRED_JSON, "plaintext-file")):
         if path.exists():
             path.unlink()
@@ -310,7 +309,7 @@ def delete_credentials() -> List[str]:
     return removed
 
 
-def prompt_credentials() -> Tuple[str, str]:
+def prompt_credentials() -> tuple[str, str]:
     """交互式询问手机号和密码（密码不回显）。"""
     phone = input("幕布手机号: ").strip()
     password = getpass.getpass("幕布密码（输入时不显示）: ")

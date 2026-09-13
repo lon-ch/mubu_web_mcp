@@ -13,14 +13,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional
 
-from . import __version__
-from . import credentials, installer
+from . import __version__, credentials, installer
 from . import server as server_module
 
 
-def _print_results(results: List[str]) -> None:
+def _print_results(results: list[str]) -> None:
     for line in results:
         print("  " + line)
 
@@ -178,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     # 不带子命令时当作 serve，这样 MCP 客户端可以直接用 `-m mubu_web_mcp`

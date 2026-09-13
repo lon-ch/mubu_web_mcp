@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 __all__ = ["markdown_to_tree", "tree_to_markdown"]
 
 
-def _new_node(text: str) -> Dict[str, Any]:
+def _new_node(text: str) -> dict[str, Any]:
     return {"id": uuid.uuid4().hex[:12], "text": text, "children": []}
 
 
@@ -29,7 +29,7 @@ def _clean(text: Any) -> str:
 # 幕布 → Markdown
 # --------------------------------------------------------------------------
 
-def _node_to_markdown(node: Dict[str, Any], level: int, lines: List[str]) -> None:
+def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str]) -> None:
     indent = "  " * level
     checked = node.get("finish")
     if checked is None:
@@ -45,7 +45,7 @@ def _node_to_markdown(node: Dict[str, Any], level: int, lines: List[str]) -> Non
         lines.append(f"{indent}> {_clean(note)}")
 
 
-def tree_to_markdown(tree: Dict[str, Any]) -> str:
+def tree_to_markdown(tree: dict[str, Any]) -> str:
     """把幕布文档结构渲染成 Markdown。"""
     nodes = tree.get("nodes") if isinstance(tree, dict) else None
     if not nodes:
@@ -53,7 +53,7 @@ def tree_to_markdown(tree: Dict[str, Any]) -> str:
             nodes = [tree]
         else:
             return ""
-    lines: List[str] = []
+    lines: list[str] = []
     for node in nodes:
         title = _clean(node.get("text"))
         if title:
@@ -75,18 +75,17 @@ _NOTE = re.compile(r"^(\s*)>\s?(.*)$")
 _CHECKBOX = re.compile(r"^\[([ xX])\]\s*(.*)$")
 
 
-def markdown_to_tree(markdown: str, title: Optional[str] = None) -> Dict[str, Any]:
+def markdown_to_tree(markdown: str, title: str | None = None) -> dict[str, Any]:
     """把 Markdown 解析成幕布节点树（标题 / 缩进列表 / 勾选 / 引用备注）。
 
     备注行的缩进决定它挂在哪一层：0 缩进属于顶层节点，2 个空格属于第二层，
     以此类推 —— 这跟 :func:`tree_to_markdown` 的输出规则互为逆运算。
     """
     doc_title = (title or "").strip()
-    top: List[Dict[str, Any]] = []
-    stack: List[tuple] = []
-    first_was_plain = False
+    top: list[dict[str, Any]] = []
+    stack: list[tuple] = []
 
-    def node_at(target_depth: int) -> Optional[Dict[str, Any]]:
+    def node_at(target_depth: int) -> dict[str, Any] | None:
         found = None
         for depth, node in stack:
             if depth == target_depth:
@@ -95,7 +94,7 @@ def markdown_to_tree(markdown: str, title: Optional[str] = None) -> Dict[str, An
                 break
         return found
 
-    def deepest_up_to(max_depth: int) -> Optional[Dict[str, Any]]:
+    def deepest_up_to(max_depth: int) -> dict[str, Any] | None:
         found = None
         for depth, node in stack:
             if depth <= max_depth:
@@ -151,8 +150,6 @@ def markdown_to_tree(markdown: str, title: Optional[str] = None) -> Dict[str, An
             continue
 
         node = _new_node(raw.strip())
-        if not top and not doc_title:
-            first_was_plain = True
         top.append(node)
         stack = [(0, node)]
 

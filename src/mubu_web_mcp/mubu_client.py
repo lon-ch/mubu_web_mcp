@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .credentials import CredentialsError, MissingCredentials, load_credentials
 
@@ -81,7 +81,7 @@ def _env_float(name: str, default: float) -> float:
 class MubuError(RuntimeError):
     """幕布接口返回的业务错误。"""
 
-    def __init__(self, message: str, code: Optional[int] = None) -> None:
+    def __init__(self, message: str, code: int | None = None) -> None:
         super().__init__(message)
         self.code = code
 
@@ -97,17 +97,17 @@ __all__ = [
 
 
 class MubuClient:
-    def __init__(self, phone: Optional[str] = None, password: Optional[str] = None,
-                 timeout: Optional[float] = None) -> None:
+    def __init__(self, phone: str | None = None, password: str | None = None,
+                 timeout: float | None = None) -> None:
         self._phone = (phone or "").strip() or None
         self._password = password or None
         self.timeout = timeout if timeout is not None else _env_float("MUBU_TIMEOUT", 20.0)
         self.min_interval = _env_int("MUBU_MIN_INTERVAL_MS", 200) / 1000.0
         self.max_retries = _env_int("MUBU_MAX_RETRIES", 2)
-        self._token: Optional[str] = None
-        self._member_id: Optional[str] = None
-        self._name: Optional[str] = None
-        self._user_id: Optional[str] = None
+        self._token: str | None = None
+        self._member_id: str | None = None
+        self._name: str | None = None
+        self._user_id: str | None = None
         self._expires_at = 0.0
         self._unique_id = str(uuid.uuid4())
         self._session_id = str(uuid.uuid4())
@@ -151,7 +151,7 @@ class MubuClient:
 
     # ---- 底层 HTTP ---------------------------------------------------
 
-    def _headers(self, token: Optional[str]) -> Dict[str, str]:
+    def _headers(self, token: str | None) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json;charset=UTF-8",
             "Accept": "application/json, text/plain, */*",
@@ -174,8 +174,8 @@ class MubuClient:
         if wait > 0:
             time.sleep(wait)
 
-    def _post(self, path: str, payload: Dict[str, Any],
-              token: Optional[str] = None) -> Dict[str, Any]:
+    def _post(self, path: str, payload: dict[str, Any],
+              token: str | None = None) -> dict[str, Any]:
         url = API_BASE + path
         if not url.startswith("https://" + API_HOST):
             raise MubuError("拒绝向非幕布域名发起请求")
@@ -212,7 +212,8 @@ class MubuClient:
             try:
                 obj = json.loads(text)
             except ValueError:
-                raise MubuError(f"接口返回了非 JSON 内容（HTTP {status}）：{text[:200]}")
+                raise MubuError(
+                    f"接口返回了非 JSON 内容（HTTP {status}）：{text[:200]}") from None
 
             code = obj.get("code")
             if code != 0:
@@ -225,7 +226,10 @@ class MubuClient:
                 )
                 hint = ERROR_HINTS.get(code)
                 detail = f"（{hint}）" if hint else ""
-                text_message = f"幕布接口返回 code={code}{detail}：{message}" if message else f"幕布接口返回 code={code}{detail}"
+                text_message = (
+                    f"幕布接口返回 code={code}{detail}：{message}"
+                    if message else f"幕布接口返回 code={code}{detail}"
+                )
                 if is_auth:
                     raise AuthError(text_message, code=code)
                 raise MubuError(text_message, code=code)
@@ -233,7 +237,7 @@ class MubuClient:
 
     # ---- 登录 --------------------------------------------------------
 
-    def login(self) -> Dict[str, Any]:
+    def login(self) -> dict[str, Any]:
         if not (self._phone and self._password):
             self._phone, self._password = load_credentials()
         data = self._post(ENDPOINTS["login"], {
@@ -259,8 +263,8 @@ class MubuClient:
         assert self._token
         return self._token
 
-    def request(self, path: str, payload: Optional[Dict[str, Any]] = None,
-                auth: bool = True, retry: bool = True) -> Dict[str, Any]:
+    def request(self, path: str, payload: dict[str, Any] | None = None,
+                auth: bool = True, retry: bool = True) -> dict[str, Any]:
         token = self.ensure_token() if auth else None
         try:
             return self._post(path, payload or {}, token=token)
@@ -272,7 +276,7 @@ class MubuClient:
 
     # ---- 业务方法 ----------------------------------------------------
 
-    def whoami(self) -> Dict[str, Any]:
+    def whoami(self) -> dict[str, Any]:
         self.ensure_token()
         return {
             "name": self._name,
@@ -281,10 +285,10 @@ class MubuClient:
             "token_expires_in_seconds": max(0, int(self._expires_at - time.time())),
         }
 
-    def list_dir(self, folder_id: str = "0") -> Dict[str, Any]:
+    def list_dir(self, folder_id: str = "0") -> dict[str, Any]:
         return self.request(ENDPOINTS["list"], {"folderId": str(folder_id)})
 
-    def get_doc(self, doc_id: str) -> Dict[str, Any]:
+    def get_doc(self, doc_id: str) -> dict[str, Any]:
         return self.request(ENDPOINTS["get_doc"], {
             "docId": doc_id,
             "password": "",
@@ -327,7 +331,7 @@ class MubuClient:
     # ---- 文档结构解析 ------------------------------------------------
 
     @staticmethod
-    def doc_tree(doc_data: Dict[str, Any]) -> Dict[str, Any]:
+    def doc_tree(doc_data: dict[str, Any]) -> dict[str, Any]:
         """把 get_doc 返回的 definition 字符串解析成节点树。"""
         raw = doc_data.get("definition")
         if isinstance(raw, str):

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import temp_dir  # noqa: E402
+
 from mubu_web_mcp import installer  # noqa: E402
 
 

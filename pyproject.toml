@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,12 @@ name = "mubu-web-mcp"
 description = "MCP server that lets AI agents (Codex, Claude, Cursor...) read and create Mubu (幕布) outlines"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "miaoteam" }]
 keywords = ["mcp", "model-context-protocol", "mubu", "幕布", "outliner", "notes", "ai-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

@@ -14,9 +14,9 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
 
 SERVER_KEY = "mubu_web_mcp"
 
@@ -29,7 +29,7 @@ def _appdata() -> Path:
     return Path(os.environ.get("APPDATA") or (_home() / "AppData" / "Roaming"))
 
 
-def _package_src_dir() -> Optional[Path]:
+def _package_src_dir() -> Path | None:
     """源码运行时返回 src 目录，装在 site-packages 时返回 None。"""
     here = Path(__file__).resolve()
     candidate = here.parents[1]  # .../src
@@ -38,10 +38,10 @@ def _package_src_dir() -> Optional[Path]:
     return None
 
 
-def python_command(read_only: bool = False) -> Tuple[str, Dict[str, str]]:
+def python_command(read_only: bool = False) -> tuple[str, dict[str, str]]:
     """返回 (可执行文件, 需要额外设置的 env)。"""
     exe = sys.executable or shutil.which("python3") or shutil.which("python") or "python"
-    env: Dict[str, str] = {}
+    env: dict[str, str] = {}
 
     # 如果这个解释器在没有 PYTHONPATH 的情况下 import 不到包，就把 src 目录带上
     try:
@@ -65,12 +65,13 @@ def python_command(read_only: bool = False) -> Tuple[str, Dict[str, str]]:
 class Agent:
     key: str
     label: str
-    kind: str                      # json-servers | json-mcpServers | toml-codex | claude-cli | manual
-    config_paths: Callable[[], List[Path]] = field(default=lambda: [])
+    # json-servers | json-mcpServers | toml-codex | claude-cli | manual
+    kind: str
+    config_paths: Callable[[], list[Path]] = field(default=lambda: [])
     manual_hint: str = ""
 
 
-def _claude_desktop_paths() -> List[Path]:
+def _claude_desktop_paths() -> list[Path]:
     if os.name == "nt":
         return [_appdata() / "Claude" / "claude_desktop_config.json"]
     if sys.platform == "darwin":
@@ -79,7 +80,7 @@ def _claude_desktop_paths() -> List[Path]:
     return [_home() / ".config" / "Claude" / "claude_desktop_config.json"]
 
 
-AGENTS: Dict[str, Agent] = {
+AGENTS: dict[str, Agent] = {
     "codex": Agent(
         "codex", "OpenAI Codex CLI",
         "toml-codex",
@@ -116,9 +117,9 @@ AGENTS: Dict[str, Agent] = {
 }
 
 
-def entry_for(agent: Agent, read_only: bool = False) -> Dict[str, object]:
+def entry_for(agent: Agent, read_only: bool = False) -> dict[str, object]:
     exe, env = python_command(read_only=read_only)
-    entry: Dict[str, object] = {"command": exe, "args": ["-m", "mubu_web_mcp"]}
+    entry: dict[str, object] = {"command": exe, "args": ["-m", "mubu_web_mcp"]}
     if env:
         entry["env"] = env
     if agent.kind == "json-servers":
@@ -138,7 +139,7 @@ def manual_json(read_only: bool = False) -> str:
 # 写入实现
 # ---------------------------------------------------------------------------
 
-def _backup(path: Path) -> Optional[Path]:
+def _backup(path: Path) -> Path | None:
     if not path.exists():
         return None
     backup = path.with_suffix(path.suffix + ".bak")
@@ -146,9 +147,9 @@ def _backup(path: Path) -> Optional[Path]:
     return backup
 
 
-def _write_json(path: Path, key: str, entry: Dict[str, object]) -> str:
+def _write_json(path: Path, key: str, entry: dict[str, object]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: Dict[str, object] = {}
+    data: dict[str, object] = {}
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8") or "{}")
@@ -169,7 +170,7 @@ def _toml_value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _toml_block(entry: Dict[str, object]) -> str:
+def _toml_block(entry: dict[str, object]) -> str:
     lines = [f"[mcp_servers.{SERVER_KEY}]",
              f"command = {_toml_value(entry['command'])}",
              "args = [" + ", ".join(_toml_value(a) for a in entry["args"]) + "]"]
@@ -184,7 +185,7 @@ def _toml_block(entry: Dict[str, object]) -> str:
 
 def _strip_toml_section(text: str) -> str:
     """删掉已有的 [mcp_servers.<SERVER_KEY>] 及其子表。"""
-    keep: List[str] = []
+    keep: list[str] = []
     skipping = False
     prefix = f"[mcp_servers.{SERVER_KEY}"
     for line in text.splitlines(keepends=True):
@@ -199,7 +200,7 @@ def _strip_toml_section(text: str) -> str:
     return "".join(keep)
 
 
-def _write_toml(path: Path, entry: Dict[str, object]) -> str:
+def _write_toml(path: Path, entry: dict[str, object]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     body = _strip_toml_section(original).rstrip("\n")
@@ -210,7 +211,7 @@ def _write_toml(path: Path, entry: Dict[str, object]) -> str:
     return f"已写入 {path}{note}"
 
 
-def _claude_cli(entry: Dict[str, object]) -> str:
+def _claude_cli(entry: dict[str, object]) -> str:
     claude = shutil.which("claude")
     if not claude:
         return ("没找到 claude 命令，请手动执行：\n"
@@ -223,10 +224,10 @@ def _claude_cli(entry: Dict[str, object]) -> str:
     return f"claude mcp add 失败：{result.stderr.strip() or result.stdout.strip()}"
 
 
-def install(agent_keys: List[str], read_only: bool = False,
-            dry_run: bool = False) -> List[str]:
+def install(agent_keys: list[str], read_only: bool = False,
+            dry_run: bool = False) -> list[str]:
     """把服务写进指定客户端的配置，返回每条结果说明。"""
-    results: List[str] = []
+    results: list[str] = []
     for key in agent_keys:
         agent = AGENTS.get(key)
         if agent is None:
@@ -235,12 +236,15 @@ def install(agent_keys: List[str], read_only: bool = False,
         entry = entry_for(agent, read_only=read_only)
 
         if agent.kind == "manual":
-            results.append(f"{agent.label}：需要手动配置。{agent.manual_hint}\n" + manual_json(read_only))
+            results.append(
+                f"{agent.label}：需要手动配置。{agent.manual_hint}\n"
+                + manual_json(read_only))
             continue
 
         if agent.kind == "claude-cli":
-            results.append(f"{agent.label}：" + ("（dry-run）" + f"将执行 claude mcp add {SERVER_KEY}"
-                                                 if dry_run else _claude_cli(entry)))
+            note = (f"（dry-run）将执行 claude mcp add {SERVER_KEY}"
+                    if dry_run else _claude_cli(entry))
+            results.append(f"{agent.label}：" + note)
             continue
 
         paths = agent.config_paths()
@@ -255,7 +259,7 @@ def install(agent_keys: List[str], read_only: bool = False,
     return results
 
 
-def detect_installed() -> List[str]:
+def detect_installed() -> list[str]:
     """猜测用户装了哪些客户端：有配置目录就算装了。"""
     found = []
     for key, agent in AGENTS.items():

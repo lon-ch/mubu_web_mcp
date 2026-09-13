@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
-from . import __version__
-from . import mubu_markdown
-from .mubu_client import MissingCredentials, MubuError, MubuClient
+from . import __version__, mubu_markdown
+from .mubu_client import MissingCredentials, MubuClient, MubuError
 
 SERVER_NAME = "mubu_web_mcp"
 DEFAULT_PROTOCOL = "2025-06-18"
@@ -29,7 +29,7 @@ def log(message: str) -> None:
     print(f"[{SERVER_NAME}] {message}", file=sys.stderr, flush=True)
 
 
-_client: Optional[MubuClient] = None
+_client: MubuClient | None = None
 
 
 def client() -> MubuClient:
@@ -43,11 +43,11 @@ def client() -> MubuClient:
 # 工具实现
 # --------------------------------------------------------------------------
 
-def _entry(entry: Dict[str, Any], kind: str) -> str:
+def _entry(entry: dict[str, Any], kind: str) -> str:
     return f"- [{kind}] {entry.get('name') or '(未命名)'}  id={entry.get('id', '')}"
 
 
-def tool_whoami(_args: Dict[str, Any]) -> str:
+def tool_whoami(_args: dict[str, Any]) -> str:
     info = client().whoami()
     return "\n".join([
         f"账号：{info.get('name') or '(未知)'}",
@@ -57,7 +57,7 @@ def tool_whoami(_args: Dict[str, Any]) -> str:
     ])
 
 
-def tool_list(args: Dict[str, Any]) -> str:
+def tool_list(args: dict[str, Any]) -> str:
     folder_id = str(args.get("folder_id") or "0")
     data = client().list_dir(folder_id)
     folders = data.get("folders") or []
@@ -68,7 +68,7 @@ def tool_list(args: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def tool_get_doc(args: Dict[str, Any]) -> str:
+def tool_get_doc(args: dict[str, Any]) -> str:
     doc_id = str(args.get("doc_id") or "").strip()
     if not doc_id:
         raise ValueError("doc_id 不能为空")
@@ -78,14 +78,14 @@ def tool_get_doc(args: Dict[str, Any]) -> str:
     return mubu_markdown.tree_to_markdown(tree)
 
 
-def tool_search(args: Dict[str, Any]) -> str:
+def tool_search(args: dict[str, Any]) -> str:
     keyword = str(args.get("keyword") or "").strip()
     if not keyword:
         raise ValueError("keyword 不能为空")
     include_content = bool(args.get("include_content"))
     limit = min(int(args.get("limit") or 20), 50)
     needle = keyword.lower()
-    hits: List[str] = []
+    hits: list[str] = []
     visited = 0
     scanned_docs = 0
     queue = [("0", "")]
@@ -130,7 +130,7 @@ def tool_search(args: Dict[str, Any]) -> str:
     return f"找到 {len(hits)} 条：\n" + "\n".join(hits) + suffix
 
 
-def tool_create_doc(args: Dict[str, Any]) -> str:
+def tool_create_doc(args: dict[str, Any]) -> str:
     name = str(args.get("name") or "").strip()
     markdown = str(args.get("markdown") or "")
     folder_id = str(args.get("folder_id") or "0")
@@ -143,7 +143,7 @@ def tool_create_doc(args: Dict[str, Any]) -> str:
     return f"已在幕布创建文档「{name}」，id={doc_id}（可在幕布里打开确认）"
 
 
-def tool_create_folder(args: Dict[str, Any]) -> str:
+def tool_create_folder(args: dict[str, Any]) -> str:
     name = str(args.get("name") or "").strip()
     folder_id = str(args.get("folder_id") or "0")
     if not name:
@@ -160,22 +160,23 @@ def tool_create_folder(args: Dict[str, Any]) -> str:
 class Tool:
     name: str
     description: str
-    schema: Dict[str, Any]
-    func: Callable[[Dict[str, Any]], str]
+    schema: dict[str, Any]
+    func: Callable[[dict[str, Any]], str]
     write: bool = False
 
-    def to_mcp(self) -> Dict[str, Any]:
+    def to_mcp(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "inputSchema": self.schema}
 
 
-def all_tools() -> List[Tool]:
+def all_tools() -> list[Tool]:
     return [
         Tool("mubu_whoami", "查看当前幕布账号信息和登录状态。",
              {"type": "object", "properties": {}, "additionalProperties": False},
              tool_whoami),
         Tool("mubu_list", "列出幕布某个目录下的文件夹和文档。folder_id 传 \"0\" 表示根目录。",
              {"type": "object",
-              "properties": {"folder_id": {"type": "string", "description": "目录 id，默认 \"0\"（根目录）"}},
+              "properties": {"folder_id": {"type": "string",
+                                           "description": "目录 id，默认 \"0\"（根目录）"}},
               "additionalProperties": False},
              tool_list),
         Tool("mubu_get_doc", "读取一篇幕布文档的完整内容，默认返回 Markdown 大纲。",
@@ -190,12 +191,14 @@ def all_tools() -> List[Tool]:
              {"type": "object",
               "properties": {
                   "keyword": {"type": "string", "description": "关键词"},
-                  "include_content": {"type": "boolean", "description": "是否同时搜索文档正文，较慢"},
+                  "include_content": {"type": "boolean",
+                                      "description": "是否同时搜索文档正文，较慢"},
                   "limit": {"type": "integer", "description": "最多返回多少条，默认 20，上限 50"}},
               "required": ["keyword"], "additionalProperties": False},
              tool_search),
         Tool("mubu_create_doc",
-             "在幕布新建一篇文档，Markdown 会转成幕布大纲（支持标题、缩进列表、- [x] 勾选、> 备注）。",
+             "在幕布新建一篇文档，Markdown 会转成幕布大纲"
+             "（支持标题、缩进列表、- [x] 勾选、> 备注）。",
              {"type": "object",
               "properties": {
                   "name": {"type": "string", "description": "文档标题"},
@@ -213,11 +216,11 @@ def all_tools() -> List[Tool]:
     ]
 
 
-def public_tools(read_only: bool) -> List[Dict[str, Any]]:
+def public_tools(read_only: bool) -> list[dict[str, Any]]:
     return [t.to_mcp() for t in all_tools() if not (read_only and t.write)]
 
 
-def handlers(read_only: bool) -> Dict[str, Tool]:
+def handlers(read_only: bool) -> dict[str, Tool]:
     return {t.name: t for t in all_tools() if not (read_only and t.write)}
 
 
@@ -232,7 +235,7 @@ def read_only_mode(explicit: bool = False) -> bool:
 # MCP 协议（stdio，换行分隔的 JSON-RPC 2.0）
 # --------------------------------------------------------------------------
 
-def handle(request: Dict[str, Any], read_only: bool = False) -> Optional[Dict[str, Any]]:
+def handle(request: dict[str, Any], read_only: bool = False) -> dict[str, Any] | None:
     method = request.get("method")
     request_id = request.get("id")
     params = request.get("params") or {}
