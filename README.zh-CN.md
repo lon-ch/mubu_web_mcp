@@ -41,7 +41,7 @@ Markdown 与幕布大纲的转换是往返稳定的：写进去再读回来，�
 
 ```bash
 # 1. 安装（零第三方依赖）
-pipx install git+https://github.com/miaoteam/mubu_web_mcp
+pipx install git+https://github.com/lon-ch/mubu_web_mcp
 
 # 2. 登录（会提示输入手机号和密码）
 mubu-web-mcp login
@@ -60,12 +60,12 @@ mubu-web-mcp doctor
 把下面这段丢给你的智能体，它就能自己装好并接上：
 
 ```text
-请帮我安装并接入这个 MCP 服务：https://github.com/miaoteam/mubu_web_mcp
-步骤：(1) pipx install git+https://github.com/miaoteam/mubu_web_mcp
+请帮我安装并接入这个 MCP 服务：https://github.com/lon-ch/mubu_web_mcp
+步骤：(1) pipx install git+https://github.com/lon-ch/mubu_web_mcp
 (2) 让我自己在终端执行 mubu-web-mcp login —— 不要向我索要密码，也不要把密码写进命令行或配置文件
 (3) mubu-web-mcp setup --agent all --yes
 (4) mubu-web-mcp doctor，并把结果给我看
-细节参考 https://github.com/miaoteam/mubu_web_mcp/blob/main/AGENTS.md
+细节参考 https://github.com/lon-ch/mubu_web_mcp/blob/main/AGENTS.md
 ```
 
 面向智能体的完整说明见 [AGENTS.md](AGENTS.md)，各客户端的分步提示词见

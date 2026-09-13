@@ -28,10 +28,10 @@ dependencies = []
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/miaoteam/mubu_web_mcp"
-Repository = "https://github.com/miaoteam/mubu_web_mcp"
-Issues = "https://github.com/miaoteam/mubu_web_mcp/issues"
-Changelog = "https://github.com/miaoteam/mubu_web_mcp/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/lon-ch/mubu_web_mcp"
+Repository = "https://github.com/lon-ch/mubu_web_mcp"
+Issues = "https://github.com/lon-ch/mubu_web_mcp/issues"
+Changelog = "https://github.com/lon-ch/mubu_web_mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 mubu-web-mcp = "mubu_web_mcp.cli:main"

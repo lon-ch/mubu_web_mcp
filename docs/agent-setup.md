@@ -6,10 +6,10 @@ to have **you** run the login command yourself, and to verify the result.
 ## Generic (works with any agent)
 
 ```text
-Install the MCP server at https://github.com/miaoteam/mubu_web_mcp and connect it to your
+Install the MCP server at https://github.com/lon-ch/mubu_web_mcp and connect it to your
 own tool list.
 Steps:
-1. pipx install git+https://github.com/miaoteam/mubu_web_mcp
+1. pipx install git+https://github.com/lon-ch/mubu_web_mcp
 2. Tell me to run `mubu-web-mcp login` myself in a terminal. Do not ask me for my password,
    and do not put it in any command line or config file.
 3. mubu-web-mcp setup --agent all --yes
@@ -21,8 +21,8 @@ Follow AGENTS.md from the repository for the details.
 ## Codex
 
 ```text
-Please install https://github.com/miaoteam/mubu_web_mcp and wire it into Codex:
-run `pipx install git+https://github.com/miaoteam/mubu_web_mcp`,
+Please install https://github.com/lon-ch/mubu_web_mcp and wire it into Codex:
+run `pipx install git+https://github.com/lon-ch/mubu_web_mcp`,
 ask me to run `mubu-web-mcp login` in my own terminal,
 then run `mubu-web-mcp setup --agent codex --yes` and `mubu-web-mcp doctor`.
 If you can't write ~/.codex/config.toml, show me the exact block to paste instead.
@@ -39,7 +39,7 @@ args = ["-m", "mubu_web_mcp"]
 ## Claude Desktop / Cursor / Windsurf / VS Code
 
 ```text
-Install https://github.com/miaoteam/mubu_web_mcp for me, then run
+Install https://github.com/lon-ch/mubu_web_mcp for me, then run
 `mubu-web-mcp setup --agent <claude-desktop|cursor|windsurf|vscode> --yes`
 so the MCP server gets registered, and show me `mubu-web-mcp doctor` output.
 Ask me to run `mubu-web-mcp login` in my own terminal — never ask me for the password.

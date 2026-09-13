@@ -2,7 +2,7 @@
 
 > Let your AI agent (Codex, Claude, Cursor, Windsurf…) read and create your [Mubu / 幕布](https://mubu.com) outlines through the Model Context Protocol.
 
-[![CI](https://github.com/miaoteam/mubu_web_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/miaoteam/mubu_web_mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/lon-ch/mubu_web_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/lon-ch/mubu_web_mcp/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
@@ -46,8 +46,8 @@ Markdown ↔ Mubu conversion is round-trip stable: import a document, read it ba
 ### 1. Install
 
 ```bash
-pipx install git+https://github.com/miaoteam/mubu_web_mcp
-# or: uv tool install git+https://github.com/miaoteam/mubu_web_mcp
+pipx install git+https://github.com/lon-ch/mubu_web_mcp
+# or: uv tool install git+https://github.com/lon-ch/mubu_web_mcp
 # or from a clone: pip install -e .
 ```
 
@@ -83,14 +83,14 @@ mubu-web-mcp doctor     # credentials, login, and root folder listing
 Paste this into your agent and it can install and configure everything itself:
 
 ```text
-Install the MCP server at https://github.com/miaoteam/mubu_web_mcp for me and connect it
+Install the MCP server at https://github.com/lon-ch/mubu_web_mcp for me and connect it
 to your own tool list.
-Steps: (1) pipx install git+https://github.com/miaoteam/mubu_web_mcp
+Steps: (1) pipx install git+https://github.com/lon-ch/mubu_web_mcp
 (2) ask me to run `mubu-web-mcp login` myself in a terminal — never ask me for my
 password, and never put it in a command line or a config file
 (3) `mubu-web-mcp setup --agent all --yes`
 (4) `mubu-web-mcp doctor` and show me the result.
-Follow https://github.com/miaoteam/mubu_web_mcp/blob/main/AGENTS.md for the details.
+Follow https://github.com/lon-ch/mubu_web_mcp/blob/main/AGENTS.md for the details.
 ```
 
 See [AGENTS.md](AGENTS.md) for the full instructions written for AI agents, and

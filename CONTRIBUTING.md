@@ -16,7 +16,7 @@ Thanks for helping. A few ground rules keep this project useful and safe.
 ## Development setup
 
 ```bash
-git clone https://github.com/miaoteam/mubu_web_mcp
+git clone https://github.com/lon-ch/mubu_web_mcp
 cd mubu_web_mcp
 python -m pip install -e .
 python -m unittest discover -s tests

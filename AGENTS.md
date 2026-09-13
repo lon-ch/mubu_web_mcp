@@ -18,7 +18,7 @@ Run these steps in order. Ask before each step that changes the user's machine.
 1. **Install the package**
 
    ```bash
-   pipx install git+https://github.com/miaoteam/mubu_web_mcp
+   pipx install git+https://github.com/lon-ch/mubu_web_mcp
    # fallbacks: uv tool install ... / pip install -e . (from a clone)
    ```
 
