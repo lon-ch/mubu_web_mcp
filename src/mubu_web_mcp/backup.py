@@ -658,8 +658,8 @@ class BackupEngine:
         elif entries:
             from_entry(entries)
 
-        for field in self.options.image_fields:
-            value = node.get(field)
+        for extra_field in self.options.image_fields:
+            value = node.get(extra_field)
             if isinstance(value, list):
                 for entry in value:
                     from_entry(entry)

@@ -501,7 +501,8 @@ class BackupEngineTests(unittest.TestCase):
         self.assertTrue(any("1_b.png" in url for url in urls))
 
     def test_link_fields_are_not_treated_as_images(self):
-        self.docs["d1"] = definition(("A", [], {"link": "https://api2.mubu.com/v3/document_image/x.png"}))
+        self.docs["d1"] = definition(
+            ("A", [], {"link": "https://api2.mubu.com/v3/document_image/x.png"}))
         with mock.patch.object(backup, "fetch_asset") as fetcher:
             backup.run_backup(self.client, self.options(download_assets=True))
         fetcher.assert_not_called()
