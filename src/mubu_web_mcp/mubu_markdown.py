@@ -65,8 +65,35 @@ def _emit_images(images: list[dict[str, Any]] | None, indent: str,
             lines.append(f"{indent}> 图片备份失败：原始图片地址已记录在备份清单中。")
 
 
+# 幕布内部文档链接：https://mubu.com/app/edit/home/<文档ID>
+MUBU_DOC_LINK = re.compile(r"https?://mubu\.com/app/edit/home/([A-Za-z0-9]+)")
+
+
+def rewrite_mubu_links(text: str, link_resolver: Any = None) -> str:
+    """把幕布内部文档链接换成本地相对路径；解析不到就保留原链接。"""
+    if not text or link_resolver is None:
+        return text
+
+    def replace(match: re.Match) -> str:
+        return link_resolver(match.group(1)) or match.group(0)
+
+    return MUBU_DOC_LINK.sub(replace, text)
+
+
+def _task_metadata(node: dict[str, Any]) -> str:
+    """幕布特有的任务字段保留成 HTML 注释：渲染时不可见，也不污染正文。"""
+    parts: list[str] = []
+    for key in ("taskStatus", "deadline", "remindAt"):
+        value = node.get(key)
+        if value not in (None, 0):
+            parts.append(f"{key}={value}")
+    if node.get("collapsed"):
+        parts.append("collapsed=true")
+    return f"<!-- mubu: {' '.join(parts)} -->" if parts else ""
+
+
 def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
-                      image_resolver: Any = None) -> None:
+                      image_resolver: Any = None, link_resolver: Any = None) -> None:
     if not isinstance(node, dict):
         return
     indent = "  " * level
@@ -77,20 +104,25 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
     checked = node.get("finish")
     if checked is None:
         checked = node.get("checked")
+    text = rewrite_mubu_links(_clean(node.get("text")), link_resolver)
     if checked is None:
-        lines.append(f"{indent}{marker} {_clean(node.get('text'))}")
+        lines.append(f"{indent}{marker} {text}")
     else:
-        lines.append(f"{indent}{marker} [{'x' if checked else ' '}] "
-                     f"{_clean(node.get('text'))}")
+        lines.append(f"{indent}{marker} [{'x' if checked else ' '}] {text}")
+    metadata = _task_metadata(node)
+    if metadata:
+        lines.append(f"{indent}{metadata}")
     # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
-    _emit_notes(node.get("note"), "  " * (level + 1), lines)
+    _emit_notes(rewrite_mubu_links(node.get("note") or "", link_resolver),
+                "  " * (level + 1), lines)
     if image_resolver is not None:
         _emit_images(image_resolver(node), indent, lines)
     for child in node.get("children") or []:
-        _node_to_markdown(child, level + 1, lines, image_resolver)
+        _node_to_markdown(child, level + 1, lines, image_resolver, link_resolver)
 
 
-def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None) -> str:
+def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None,
+                     link_resolver: Any = None) -> str:
     """把幕布文档结构渲染成 Markdown。
 
     ``image_resolver`` 由 :func:`make_image_resolver` 提供；不传则完全保持旧行为。
@@ -106,11 +138,14 @@ def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None) -> str:
         title = _clean(node.get("text"))
         if title:
             lines.append(f"# {title}")
-        _emit_notes(node.get("note"), "  ", lines)
+        metadata = _task_metadata(node)
+        if metadata:
+            lines.append(metadata)
+        _emit_notes(rewrite_mubu_links(node.get("note") or "", link_resolver), "  ", lines)
         if image_resolver is not None:
             _emit_images(image_resolver(node), "", lines)
         for child in node.get("children") or []:
-            _node_to_markdown(child, 0, lines, image_resolver)
+            _node_to_markdown(child, 0, lines, image_resolver, link_resolver)
     return "\n".join(lines)
 
 

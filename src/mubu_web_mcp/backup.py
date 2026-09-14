@@ -368,6 +368,7 @@ class BackupEngine:
         self.state: dict[str, Any] = {"queue": [], "processed": []}
         self.names = NameAllocator()
         self.stale_candidates: list[dict[str, str]] = []
+        self.link_map: dict[str, str] = {}
         self._started = time.time()
 
     # ---- 基础 --------------------------------------------------------
@@ -425,9 +426,44 @@ class BackupEngine:
 
     # ---- 主流程 ------------------------------------------------------
 
+    def _build_link_map(self) -> dict[str, str]:
+        """预扫描目录，为每篇文档分配稳定路径，用于把幕布内部链接转成本地相对路径。
+
+        只列目录、不拉正文，所以额外成本是"每个目录一次请求"。
+        """
+        mapping: dict[str, str] = {}
+        names = NameAllocator()
+        queue: list[tuple[str, str, int]] = [(self.options.folder_id, "", 0)]
+        while queue and len(mapping) < self.options.max_docs:
+            folder_id, path, depth = queue.pop(0)
+            if depth > self.options.max_depth:
+                continue
+            try:
+                data = self.client.list_dir(folder_id)
+            except MubuError:
+                continue
+            for position, folder in enumerate(data.get("folders") or []):
+                sub_id = str(folder.get("id"))
+                name = safe_filename(folder.get("name"), fallback=sub_id)
+                prefix = sort_prefix(folder.get("seq", folder.get("order")), position) \
+                    if self.options.sort_prefix else ""
+                allocated = names.allocate(path, f"{prefix}{name}", sub_id)
+                queue.append((sub_id, f"{path}{allocated}/", depth + 1))
+            for position, doc in enumerate(data.get("documents") or data.get("docs") or []):
+                doc_id = str(doc.get("id"))
+                name = safe_filename(doc.get("name"), fallback=doc_id)
+                prefix = sort_prefix(doc.get("seq", doc.get("order")), position) \
+                    if self.options.sort_prefix else ""
+                existing = (self.manifest["entries"].get(doc_id) or {}).get("file")
+                filename = (Path(existing).name if existing
+                            else names.allocate(path, f"{prefix}{name}", doc_id, ".md"))
+                mapping[doc_id] = f"{path}{filename}"
+        return mapping
+
     def run(self) -> dict[str, Any]:
         self._load_existing()
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.link_map = self._build_link_map()
         self.client.min_interval = max(
             self.client.min_interval, self.options.interval_ms / 1000.0)
         api_before = self._api_requests_before()
@@ -586,6 +622,15 @@ class BackupEngine:
         raw = self.client.get_doc(doc_id)
         tree = self.client.doc_tree(raw)
 
+        converted = [0]
+
+        def resolve_link(target_id: str) -> str | None:
+            local = self.link_map.get(target_id)
+            if local and local != rel_path:
+                converted[0] += 1
+                return local
+            return None
+
         asset_records: list[dict[str, Any]] = []
         resolver = None
         if self.options.download_assets:
@@ -593,7 +638,8 @@ class BackupEngine:
             resolver = mubu_markdown.make_image_resolver(
                 asset_records, self.options.image_fields)
 
-        markdown = mubu_markdown.tree_to_markdown(tree, image_resolver=resolver)
+        markdown = mubu_markdown.tree_to_markdown(
+            tree, image_resolver=resolver, link_resolver=resolve_link)
         atomic_write_text(target, markdown if markdown.endswith("\n") else markdown + "\n")
 
         ok_images = sum(1 for a in asset_records if a["status"] == "ok")
@@ -610,7 +656,7 @@ class BackupEngine:
             "size": target.stat().st_size,
             "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
             "images": {"total": len(asset_records), "ok": ok_images, "failed": failed_images},
-            "links": {"total": 0, "converted": 0, "failed": 0},
+            "links": {"converted": converted[0]},
             "status": "ok" if not failed_images else "partial",
         }
         self.manifest["assets"][doc_id] = asset_records

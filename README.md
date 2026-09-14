@@ -85,6 +85,11 @@ mubu-web-mcp backup --out ~/mubu-backup --dry-run       # list what would be bac
 mubu-web-mcp backup --out ~/mubu-backup --assets        # also fetch images (experimental)
 ```
 
+The output follows Mubu's own Markdown export conventions: notes appear directly under their node
+one level deeper, images are `![image-N](…)` pointing at a per-document `<name>.assets/` folder,
+internal document links are rewritten to local relative paths, and Mubu-specific task fields
+(`deadline`, `remindAt`, `taskStatus`, `collapsed`) are kept as `<!-- mubu: … -->` comments.
+
 What it gives you:
 
 * recursive folder index, with `--depth` / `--max-folders` / `--max-docs` limits;

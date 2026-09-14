@@ -357,7 +357,7 @@ class BackupEngineTests(unittest.TestCase):
     def test_folder_scope(self):
         stats = backup.run_backup(self.client, self.options(folder_id="f1"))
         self.assertEqual(stats["documentsWritten"], 1)
-        self.assertEqual(self.client.list_calls, ["f1"])
+        self.assertEqual(set(self.client.list_calls), {"f1"})  # 预扫描 + 正式备份各一次
 
     def test_stale_files_reported_not_deleted(self):
         backup.run_backup(self.client, self.options(sort_prefix=False))
@@ -513,6 +513,39 @@ class BackupEngineTests(unittest.TestCase):
         backup.run_backup(self.client, self.options())
         self.assertFalse(hasattr(self.client, "import_doc"))
         self.assertFalse(hasattr(self.client, "create_folder"))
+
+    def test_internal_document_link_becomes_local_path(self):
+        """幕布内部链接（URL 里带文档 ID）应换成本地相对路径。"""
+        self.documents["0"] = [
+            {"id": "d1", "name": "索引", "updateTime": 1},
+            {"id": "d2", "name": "目标文档", "updateTime": 1},
+        ]
+        self.documents["f1"] = [{"id": "d3", "name": "别的文档", "updateTime": 1}]
+        self.docs["d3"] = definition(("别的文档", []))
+        self.docs["d1"] = definition(
+            ("索引", ["见 [目标文档](https://mubu.com/app/edit/home/d2) 这篇"]))
+        self.docs["d2"] = definition(("目标文档", []))
+        backup.run_backup(self.client, self.options(sort_prefix=False))
+        index_file = self.out / "索引.md"
+        content = index_file.read_text(encoding="utf-8")
+        self.assertIn("(目标文档.md)", content)
+        self.assertNotIn("mubu.com/app/edit/home", content)
+
+    def test_unknown_internal_link_is_kept(self):
+        self.docs["d1"] = definition(
+            ("索引", ["外部文档 [X](https://mubu.com/app/edit/home/notInBackup)"]))
+        backup.run_backup(self.client, self.options(sort_prefix=False))
+        content = (self.out / "会议记录.md").read_text(encoding="utf-8")
+        self.assertIn("https://mubu.com/app/edit/home/notInBackup", content)
+
+    def test_task_metadata_preserved_as_comment(self):
+        self.docs["d1"] = definition(
+            ("任务", [], {"deadline": 1789396634872, "taskStatus": 1, "collapsed": True}))
+        backup.run_backup(self.client, self.options())
+        content = next(self.out.rglob("*.md")).read_text(encoding="utf-8")
+        self.assertIn("<!-- mubu:", content)
+        self.assertIn("deadline=1789396634872", content)
+        self.assertIn("taskStatus=1", content)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+Aligns the Markdown output with Mubu's own export and uses the real document structure that was
+confirmed on live documents.
+
+### Added
+
+- **Internal document links are rewritten to local relative paths.** Mubu link URLs carry the
+  target document id (`https://mubu.com/app/edit/home/<id>`), so the backup builds an
+  id → local path map in a listing-only pre-pass and substitutes it while rendering. Links to
+  documents outside the backup (or to documents that could not be read) keep their original URL.
+- **Images use the real `images` field** — `[{"id", "uri", "w", "ow", "oh"}]` — instead of the
+  previous field-name/URL-suffix heuristic. `uri` is a relative path
+  (`document_image/<user>_<uuid>.<ext>`) and is resolved to `https://api2.mubu.com/v3/<uri>`
+  (verified: returns `image/png`). Alt text defaults to `image-N` like the official export, and
+  `w`/`ow`/`oh` are recorded in `assets.json`.
+- **Task metadata is preserved as an HTML comment** (`<!-- mubu: deadline=… taskStatus=1 … -->`),
+  so `deadline`, `remindAt`, `taskStatus` and `collapsed` survive without inventing visible
+  Markdown syntax.
+
+### Changed
+
+- **Notes now follow the official export convention**: emitted immediately after the node's own
+  line, indented one level deeper, *before* its children (previously they were emitted after the
+  children at the node's own indent). The parser was updated to match, so round-trips stay stable.
+- Images are emitted at the node's own indent, matching the official export.
+
 ## [0.3.0] - 2026-09-14
 
 ### Security
