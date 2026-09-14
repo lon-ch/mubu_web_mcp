@@ -59,6 +59,58 @@ class MarkdownToTreeTests(unittest.TestCase):
 
 
 class TreeToMarkdownTests(unittest.TestCase):
+    # ---- 富文本（幕布的 text/note 实际是 HTML）----
+
+    def test_span_is_unwrapped(self):
+        self.assertEqual(mubu_markdown.html_to_markdown("<span>文字</span>"), "文字")
+
+    def test_inline_formatting_mapped(self):
+        html = "<b>粗体</b> <i>斜体</i> <code>x=1</code>"
+        self.assertEqual(mubu_markdown.html_to_markdown(html),
+                         "**粗体** *斜体* `x=1`")
+
+    def test_anchor_becomes_markdown_link(self):
+        html = '<a href="https://example.com">示例</a>'
+        self.assertEqual(mubu_markdown.html_to_markdown(html),
+                         "[示例](https://example.com)")
+
+    def test_table_becomes_pipe_table(self):
+        html = ('<div class="table-container"><table class="auto-table">'
+                "<thead><tr><th>标题</th><th>数量</th></tr></thead>"
+                "<tbody><tr><td>甲</td><td>2</td></tr><tr><td>乙</td><td></td></tr>"
+                "</tbody></table></div>")
+        lines = mubu_markdown.html_to_markdown(html).splitlines()
+        self.assertEqual(lines[0], "| 标题 | 数量 |")
+        self.assertEqual(lines[1], "| --- | --- |")
+        self.assertEqual(lines[2], "| 甲 | 2 |")
+        self.assertEqual(lines[3], "| 乙 |  |")
+
+    def test_unknown_tag_is_preserved(self):
+        self.assertIn("<mark>", mubu_markdown.html_to_markdown("<mark>高亮</mark>"))
+
+    def test_entities_are_unescaped(self):
+        self.assertEqual(mubu_markdown.html_to_markdown("a &amp; b&nbsp;c"), "a & b c")
+
+    def test_table_node_is_emitted_as_block_without_bullet(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "<table><tr><th>A</th></tr><tr><td>1</td></tr></table>"}]}]}
+        out = mubu_markdown.tree_to_markdown(tree)
+        self.assertIn("| A |", out)
+        self.assertNotIn("- | A |", out)
+
+    def test_emoji_is_prefixed(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "灵感", "emoji": "💡"}]}]}
+        self.assertIn("- 💡 灵感", mubu_markdown.tree_to_markdown(tree))
+
+    def test_checkbox_from_finish_field(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "未完成", "finish": False},
+            {"id": "n2", "text": "已完成", "finish": True}]}]}
+        out = mubu_markdown.tree_to_markdown(tree)
+        self.assertIn("- [ ] 未完成", out)
+        self.assertIn("- [x] 已完成", out)
+
     def test_images_are_emitted_at_node_position(self):
         tree = {"nodes": [{"id": "root", "text": "文档", "children": [
             {"id": "n1", "text": "第一节", "children": [

@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-14
+
+### Added
+
+- **Rich-text conversion for node content.** Mubu stores node `text` and `note` as HTML, not
+  plain text (confirmed on a live document: `<span>…</span>`, `<div class="table-container">
+  <table>…</table></div>`). A conversion layer now maps the tags we have actually seen:
+  `<span>`/`<div>` are unwrapped, `<b>`/`<strong>` → `**…**`, `<i>`/`<em>` → `*…*`,
+  `<code>` → backticks, `<a href>` → `[text](url)`, `<br>` → newline, and HTML entities are
+  unescaped. **Unknown tags are kept verbatim** rather than silently dropped.
+- **Tables become standard Markdown pipe tables** (`| a | b |` plus the `---` separator row),
+  matching Mubu's own export, and are emitted as a block at the node's indent instead of a list
+  bullet.
+- `emoji` node field is emitted as a prefix on the node's line.
+
+### Notes
+
+- Checkboxes were confirmed again on a live document (`finish` on three nodes) and are covered by
+  a dedicated regression test producing `- [ ]` / `- [x]` exactly like the official export.
+
 ## [0.4.0] - 2026-09-14
 
 Aligns the Markdown output with Mubu's own export and uses the real document structure that was

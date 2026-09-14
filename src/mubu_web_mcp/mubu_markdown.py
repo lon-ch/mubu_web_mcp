@@ -26,12 +26,89 @@ def _clean(text: Any) -> str:
 
 
 # --------------------------------------------------------------------------
+# 富文本：幕布的 text/note 里其实是 HTML（<span>、<table>、<b>…）
+# --------------------------------------------------------------------------
+
+_TABLE_RE = re.compile(r"<table[\s\S]*?</table>", re.IGNORECASE)
+_ANCHOR_RE = re.compile(r'<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_ROW_RE = re.compile(r"<tr[\s\S]*?</tr>", re.IGNORECASE)
+_CELL_RE = re.compile(r"<t[hd][^>]*>([\s\S]*?)</t[hd]>", re.IGNORECASE)
+
+_INLINE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"<br\s*/?>", "\n"),
+    (r"</?(?:span|div|p|font|u|tbody|thead)[^>]*>", ""),
+    (r"<(?:b|strong)[^>]*>", "**"),
+    (r"</(?:b|strong)>", "**"),
+    (r"<(?:i|em)[^>]*>", "*"),
+    (r"</(?:i|em)>", "*"),
+    (r"<(?:code|tt)[^>]*>", "`"),
+    (r"</(?:code|tt)>", "`"),
+    (r"<img[^>]*alt=\"([^\"]*)\"[^>]*>", r"![\1]"),
+)
+
+
+def _plain_text(fragment: str) -> str:
+    """剥掉标签并还原实体，用于表格单元格等内容。"""
+    import html as _html
+
+    return _html.unescape(_TAG_RE.sub("", fragment)).replace("\xa0", " ").strip()
+
+
+def _table_to_markdown(html_table: str) -> str:
+    """把幕布的 HTML 表格转成标准 Markdown 竖线表格（与官方导出一致）。"""
+    rows: list[list[str]] = []
+    for row_html in _ROW_RE.findall(html_table):
+        cells = [_plain_text(cell).replace("\n", " ")
+                 for cell in _CELL_RE.findall(row_html)]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    header = rows[0]
+    lines = ["| " + " | ".join(header) + " |",
+             "| " + " | ".join(["---"] * width) + " |"]
+    lines += ["| " + " | ".join(row) + " |" for row in rows[1:]]
+    return "\n".join(lines)
+
+
+def html_to_markdown(text: Any) -> str:
+    """把幕布富文本转成 Markdown。
+
+    认得的标签转成 Markdown，认不出的**原样保留**（宁可留着也不静默丢内容）。
+    """
+    import html as _html
+
+    raw = str(text or "")
+    if "<" not in raw:
+        return _html.unescape(raw).replace("\xa0", " ")
+
+    tables: list[str] = []
+
+    def stash(match: re.Match) -> str:
+        tables.append(_table_to_markdown(match.group(0)))
+        return f"\x00{len(tables) - 1}\x00"
+
+    result = _TABLE_RE.sub(stash, raw)
+    result = _ANCHOR_RE.sub(
+        lambda m: f"[{_plain_text(m.group(2))}]({m.group(1)})", result)
+    for pattern, replacement in _INLINE_REPLACEMENTS:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    result = _html.unescape(result).replace("\xa0", " ")
+    for index, table in enumerate(tables):
+        result = result.replace(f"\x00{index}\x00", table)
+    return result
+
+
+# --------------------------------------------------------------------------
 # 幕布 → Markdown
 # --------------------------------------------------------------------------
 
 def _emit_notes(note: Any, indent: str, lines: list[str]) -> None:
     """备注保留段落结构：每一行单独输出一个引用行。"""
-    text = str(note or "").rstrip()
+    text = html_to_markdown(note).rstrip()
     if not text:
         return
     for line in text.splitlines():
@@ -104,11 +181,23 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
     checked = node.get("finish")
     if checked is None:
         checked = node.get("checked")
-    text = rewrite_mubu_links(_clean(node.get("text")), link_resolver)
-    if checked is None:
-        lines.append(f"{indent}{marker} {text}")
+    rendered = html_to_markdown(node.get("text")).strip()
+    emoji = str(node.get("emoji") or "").strip()
+    if emoji:
+        rendered = f"{emoji} {rendered}".strip()
+    if "\n" in rendered:
+        # 表格等块级内容：整块输出，不加列表标记（与官方导出一致）
+        for line in rendered.splitlines():
+            lines.append(f"{indent}{rewrite_mubu_links(line, link_resolver)}")
+        text = ""
     else:
-        lines.append(f"{indent}{marker} [{'x' if checked else ' '}] {text}")
+        text = rewrite_mubu_links(rendered, link_resolver)
+    if checked is None:
+        if text:
+            lines.append(f"{indent}{marker} {text}")
+    else:
+        if text:
+            lines.append(f"{indent}{marker} [{'x' if checked else ' '}] {text}")
     metadata = _task_metadata(node)
     if metadata:
         lines.append(f"{indent}{metadata}")
@@ -135,7 +224,8 @@ def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None,
             return ""
     lines: list[str] = []
     for node in nodes:
-        title = _clean(node.get("text"))
+        title = _clean(html_to_markdown(node.get("text")).splitlines()[0]
+                       if html_to_markdown(node.get("text")).strip() else "")
         if title:
             lines.append(f"# {title}")
         metadata = _task_metadata(node)

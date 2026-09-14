@@ -3,7 +3,7 @@
 由 miaoteam 维护。与幕布官方无关，使用的是幕布网页端同一套接口。
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __author__ = "miaoteam"
 __license__ = "Apache-2.0"
 
