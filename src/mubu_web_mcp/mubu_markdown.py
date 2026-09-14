@@ -122,7 +122,11 @@ def make_image_resolver(records: list[dict[str, Any]],
     ``fields`` 预留：真实文档字段确认后可用它做精确匹配（当前由备份引擎负责识别）。
     """
     by_node: dict[str, list[dict[str, Any]]] = {}
+    counter = 0
     for record in records:
+        # 图片编号是文档级连续的（与官方导出一致），不是每个节点各自从 1 开始
+        counter += 1
+        record = {**record, "seq": counter}
         node_id = str(record.get("nodeId") or "")
         by_node.setdefault(node_id, []).append(record)
 
@@ -136,7 +140,8 @@ def _emit_images(images: list[dict[str, Any]] | None, indent: str,
                  lines: list[str]) -> None:
     for position, image in enumerate(images or [], start=1):
         if image.get("status") == "ok" and image.get("local"):
-            alt = _clean(image.get("alt")) or f"image-{position}"
+            seq = image.get("seq") or position
+            alt = _clean(image.get("alt")) or f"image-{seq}"
             lines.append(f"{indent}![{alt}]({image['local']})")
         else:
             lines.append(f"{indent}> 图片备份失败：原始图片地址已记录在备份清单中。")
@@ -181,6 +186,13 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
     checked = node.get("finish")
     if checked is None:
         checked = node.get("checked")
+    status = node.get("taskStatus")
+    if status is not None:
+        # 幕布的任务状态：1 = 未完成，2 = 已完成（此时 finish 恒为 false）
+        if status in (1, 2):
+            checked = status == 2
+        elif status != 0:
+            checked = True
     rendered = html_to_markdown(node.get("text")).strip()
     emoji = str(node.get("emoji") or "").strip()
     if emoji:

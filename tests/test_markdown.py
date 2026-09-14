@@ -103,6 +103,33 @@ class TreeToMarkdownTests(unittest.TestCase):
             {"id": "n1", "text": "灵感", "emoji": "💡"}]}]}
         self.assertIn("- 💡 灵感", mubu_markdown.tree_to_markdown(tree))
 
+    def test_image_numbers_are_document_wide(self):
+        """跨节点的图片说明要连续编号（image-1/2/3），而不是每个节点都从 1 开始。"""
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "第一张", "children": []},
+            {"id": "n2", "text": "第二张", "children": []}]}]}
+        records = [
+            {"nodeId": "n1", "status": "ok", "local": "T.assets/001.jpg", "alt": None},
+            {"nodeId": "n2", "status": "ok", "local": "T.assets/002.jpg", "alt": None},
+        ]
+        out = mubu_markdown.tree_to_markdown(
+            tree, image_resolver=mubu_markdown.make_image_resolver(records))
+        self.assertIn("![image-1](T.assets/001.jpg)", out)
+        self.assertIn("![image-2](T.assets/002.jpg)", out)
+
+    def test_repeated_image_in_same_document_gets_new_number(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "A", "children": []},
+            {"id": "n2", "text": "B", "children": []}]}]}
+        records = [
+            {"nodeId": "n1", "status": "ok", "local": "T.assets/001.jpg", "alt": None},
+            {"nodeId": "n2", "status": "ok", "local": "T.assets/001.jpg", "alt": None},
+        ]
+        out = mubu_markdown.tree_to_markdown(
+            tree, image_resolver=mubu_markdown.make_image_resolver(records))
+        self.assertIn("![image-1](", out)
+        self.assertIn("![image-2](", out)
+
     def test_checkbox_from_finish_field(self):
         tree = {"nodes": [{"text": "T", "children": [
             {"id": "n1", "text": "未完成", "finish": False},
@@ -110,6 +137,15 @@ class TreeToMarkdownTests(unittest.TestCase):
         out = mubu_markdown.tree_to_markdown(tree)
         self.assertIn("- [ ] 未完成", out)
         self.assertIn("- [x] 已完成", out)
+
+    def test_checkbox_from_task_status(self):
+        """真实文档里 finish 恒为 false，勾选状态由 taskStatus 决定（1 未完成 / 2 已完成）。"""
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "勾选", "finish": False, "taskStatus": 1},
+            {"id": "n2", "text": "已勾选", "finish": False, "taskStatus": 2}]}]}
+        out = mubu_markdown.tree_to_markdown(tree)
+        self.assertIn("- [ ] 勾选", out)
+        self.assertIn("- [x] 已勾选", out)
 
     def test_images_are_emitted_at_node_position(self):
         tree = {"nodes": [{"id": "root", "text": "文档", "children": [
