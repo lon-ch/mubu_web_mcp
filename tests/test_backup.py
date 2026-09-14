@@ -480,7 +480,8 @@ class BackupEngineTests(unittest.TestCase):
         with mock.patch.object(backup, "fetch_asset",
                                return_value=backup.AssetPayload(
                                    b"P", "image/png",
-                                   "https://api2.mubu.com/v3/document_image/1_same.png")) as fetcher:
+                                   "https://api2.mubu.com/v3/document_image/1_same.png")
+                               ) as fetcher:
             stats = backup.run_backup(self.client, self.options(download_assets=True))
         self.assertEqual(fetcher.call_count, 1)
         self.assertEqual(stats["imagesSkipped"], 1)
