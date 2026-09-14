@@ -199,7 +199,12 @@ In read-only mode the create tools are not even advertised to the agent.
   * **macOS** — the system Keychain (`security add-generic-password`).
   * **Linux** — Secret Service via `secret-tool`.
   * **Fallback** — `~/.mubu/credentials.json` with `0600` permissions, and the CLI tells you loudly when it falls back.
-* The session token is cached in `~/.mubu/token.json` (about 2 hours, refreshed automatically).
+* The **session token** goes into the same OS secret store as the credentials (Windows DPAPI /
+  macOS Keychain / Linux Secret Service; about 2 hours, refreshed automatically). Only when no
+  system store is available does it fall back to `~/.mubu/token.json` with `0600` permissions —
+  and that file is only ever written as a fallback, never as the default.
+* `mubu-web-mcp logout` removes the credentials **and** the cached token.
+* Tokens never appear in logs, reports, backup files or error messages.
 * The only network destination in the code is `https://api2.mubu.com/v3/api`; the host name is hard-coded and re-checked before every request. There is no telemetry and no third-party logging.
 * `mubu-web-mcp logout` deletes everything that was stored locally.
 

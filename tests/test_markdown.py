@@ -59,6 +59,50 @@ class MarkdownToTreeTests(unittest.TestCase):
 
 
 class TreeToMarkdownTests(unittest.TestCase):
+    def test_images_are_emitted_at_node_position(self):
+        tree = {"nodes": [{"id": "root", "text": "文档", "children": [
+            {"id": "n1", "text": "第一节", "children": [
+                {"id": "n1-1", "text": "子节点", "children": []}]}]}]}
+        records = [{"nodeId": "n1", "status": "ok", "local": "文档.assets/001.png",
+                    "alt": "配图"}]
+        text = mubu_markdown.tree_to_markdown(
+            tree, image_resolver=mubu_markdown.make_image_resolver(records))
+        self.assertIn("![配图](文档.assets/001.png)", text)
+        # 图片在该节点之后、其子节点之前
+        self.assertLess(text.index("![配图]"), text.index("- 子节点"))
+
+    def test_failed_image_becomes_placeholder(self):
+        tree = {"nodes": [{"id": "root", "text": "文档", "children": [
+            {"id": "n1", "text": "第一节", "children": []}]}]}
+        records = [{"nodeId": "n1", "status": "failed", "local": None, "alt": None}]
+        text = mubu_markdown.tree_to_markdown(
+            tree, image_resolver=mubu_markdown.make_image_resolver(records))
+        self.assertIn("图片备份失败", text)
+        self.assertNotIn("![", text)
+
+    def test_multiline_note_keeps_paragraphs(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "A", "note": "第一段\n\n第二段", "children": []}]}]}
+        text = mubu_markdown.tree_to_markdown(tree)
+        self.assertIn("> 第一段", text)
+        self.assertIn("> ", text)
+        self.assertIn("> 第二段", text)
+        quoted = [line for line in text.splitlines() if line.startswith(">")]
+        self.assertEqual(len(quoted), 3)
+
+    def test_ordered_list_marker_when_flagged(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "第一步", "listType": "ordered", "children": []},
+            {"id": "n2", "text": "第二步", "children": []}]}]}
+        text = mubu_markdown.tree_to_markdown(tree)
+        self.assertIn("1. 第一步", text)
+        self.assertIn("- 第二步", text)
+
+    def test_tree_to_markdown_without_resolver_is_unchanged(self):
+        tree = {"nodes": [{"text": "T", "children": [
+            {"id": "n1", "text": "A", "children": []}]}]}
+        self.assertEqual(mubu_markdown.tree_to_markdown(tree), "# T\n- A")
+
     def test_renders_notes_and_checkboxes(self):
         tree = {"nodes": [{
             "id": "root", "text": "标题",

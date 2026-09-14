@@ -14,11 +14,17 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 SERVER_KEY = "mubu_web_mcp"
+
+try:  # Python 3.11+ 自带；3.10 上只跳过 TOML 校验
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - 取决于解释器版本
+    tomllib = None
 
 
 def _home() -> Path:
@@ -140,11 +146,35 @@ def manual_json(read_only: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 def _backup(path: Path) -> Path | None:
+    """备份成带时间戳的文件，避免多次安装覆盖同一个 .bak。"""
     if not path.exists():
         return None
-    backup = path.with_suffix(path.suffix + ".bak")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.{stamp}.bak")
+    counter = 1
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.{stamp}-{counter}.bak")
+        counter += 1
     shutil.copy2(path, backup)
     return backup
+
+
+def _replace_file(path: Path, text: str, backup: Path | None) -> str | None:
+    """原子写入；失败时恢复备份。返回错误说明，成功返回 None。"""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+        return None
+    except OSError as exc:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+            if backup is not None and backup.exists():
+                shutil.copy2(backup, path)
+        except OSError:
+            pass
+        return f"写入失败（已尝试恢复原文件）：{exc}"
 
 
 def _write_json(path: Path, key: str, entry: dict[str, object]) -> str:
@@ -155,12 +185,21 @@ def _write_json(path: Path, key: str, entry: dict[str, object]) -> str:
             data = json.loads(path.read_text(encoding="utf-8") or "{}")
         except ValueError:
             return f"跳过（已存在的文件不是合法 JSON，请手动修改）：{path}"
+        if not isinstance(data, dict):
+            return f"跳过（顶层不是 JSON 对象，请手动修改）：{path}"
     servers = data.setdefault(key, {})
     if not isinstance(servers, dict):
         return f"跳过（{key} 字段不是对象，请手动修改）：{path}"
     servers[SERVER_KEY] = entry
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    try:
+        json.loads(text)
+    except ValueError:
+        return f"跳过（生成的内容不是合法 JSON）：{path}"
     backup = _backup(path)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    error = _replace_file(path, text, backup)
+    if error:
+        return f"{path} {error}"
     note = f"（已备份到 {backup.name}）" if backup else ""
     return f"已写入 {path}{note}"
 
@@ -187,11 +226,13 @@ def _strip_toml_section(text: str) -> str:
     """删掉已有的 [mcp_servers.<SERVER_KEY>] 及其子表。"""
     keep: list[str] = []
     skipping = False
-    prefix = f"[mcp_servers.{SERVER_KEY}"
+    target = f"mcp_servers.{SERVER_KEY}"
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
         if stripped.startswith("["):
-            if stripped.startswith(prefix):
+            # 精确匹配表名，避免误删名称相近的段（如 mubu_web_mcp_extra）
+            name = stripped.strip("[]").strip()
+            if name == target or name.startswith(f"{target}."):
                 skipping = True
                 continue
             skipping = False
@@ -203,10 +244,22 @@ def _strip_toml_section(text: str) -> str:
 def _write_toml(path: Path, entry: dict[str, object]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     original = path.read_text(encoding="utf-8") if path.exists() else ""
+    if original and tomllib is not None:
+        try:
+            tomllib.loads(original)
+        except tomllib.TOMLDecodeError as exc:
+            return f"跳过（已存在的文件不是合法 TOML：{exc}）：{path}"
     body = _strip_toml_section(original).rstrip("\n")
     text = (body + "\n\n" if body else "") + _toml_block(entry)
+    if tomllib is not None:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            return f"跳过（生成的内容不是合法 TOML：{exc}）：{path}"
     backup = _backup(path)
-    path.write_text(text, encoding="utf-8")
+    error = _replace_file(path, text, backup)
+    if error:
+        return f"{path} {error}"
     note = f"（已备份到 {backup.name}）" if backup else ""
     return f"已写入 {path}{note}"
 

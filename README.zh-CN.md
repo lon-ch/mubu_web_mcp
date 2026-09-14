@@ -153,7 +153,11 @@ mubu-web-mcp install --agent codex --read-only
   * **macOS**：系统钥匙串
   * **Linux**：通过 `secret-tool` 存进 Secret Service
   * **兜底**：`~/.mubu/credentials.json`，权限 0600，并且 CLI 会明确告诉你降级了
-* 登录 token 缓存在 `~/.mubu/token.json`（约 2 小时，自动续期）
+* **登录 token** 与凭据一样进系统安全存储（Windows DPAPI / macOS 钥匙串 / Linux Secret Service，
+  约 2 小时自动续期）；只有在系统级存储不可用时才回退到 `~/.mubu/token.json`（权限 0600），
+  且只作为回退写入
+* `mubu-web-mcp logout` 会同时删除凭据与缓存的 token
+* token 不会出现在日志、报告、备份文件或错误信息里
 * 代码里的唯一网络目标是 `https://api2.mubu.com/v3/api`，主机名硬编码，每次请求前再校验一次；没有遥测，没有第三方日志
 * `mubu-web-mcp logout` 会删掉本机保存的一切
 

@@ -14,7 +14,7 @@ repository profile. Include reproduction steps and the affected version.
 | | macOS: system Keychain | Keychain access control |
 | | Linux: Secret Service via `secret-tool` | Desktop keyring |
 | | Fallback: `~/.mubu/credentials.json` | Filesystem permissions `0600` only |
-| Session token (JWT, about 2 hours) | `~/.mubu/token.json` | Filesystem permissions `0600` |
+| Session token (JWT, about 2 hours) | Same OS secret store as the credentials (DPAPI / Keychain / Secret Service) | `~/.mubu/token.json` is written only as a `0600` fallback when no system store exists |
 | Environment override | `MUBU_PHONE` / `MUBU_PASSWORD` | Whatever your shell environment provides |
 
 `mubu-web-mcp logout` removes the credential material from every backend it can reach. The token

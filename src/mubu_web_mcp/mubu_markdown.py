@@ -14,7 +14,7 @@ import re
 import uuid
 from typing import Any
 
-__all__ = ["markdown_to_tree", "tree_to_markdown"]
+__all__ = ["make_image_resolver", "markdown_to_tree", "tree_to_markdown"]
 
 
 def _new_node(text: str) -> dict[str, Any]:
@@ -29,26 +29,71 @@ def _clean(text: Any) -> str:
 # 幕布 → Markdown
 # --------------------------------------------------------------------------
 
-def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str]) -> None:
+def _emit_notes(note: Any, indent: str, lines: list[str]) -> None:
+    """备注保留段落结构：每一行单独输出一个引用行。"""
+    text = str(note or "").rstrip()
+    if not text:
+        return
+    for line in text.splitlines():
+        lines.append(f"{indent}> {_clean(line)}" if line.strip() else f"{indent}>")
+
+
+def make_image_resolver(records: list[dict[str, Any]],
+                        fields: tuple[str, ...] = ()):
+    """把备份引擎产出的图片记录变成 (node) -> 图片列表 的解析器。
+
+    ``fields`` 预留：真实文档字段确认后可用它做精确匹配（当前由备份引擎负责识别）。
+    """
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        node_id = str(record.get("nodeId") or "")
+        by_node.setdefault(node_id, []).append(record)
+
+    def resolver(node: dict[str, Any]) -> list[dict[str, Any]]:
+        return by_node.get(str(node.get("id") or ""), [])
+
+    return resolver
+
+
+def _emit_images(images: list[dict[str, Any]] | None, indent: str,
+                 lines: list[str]) -> None:
+    for position, image in enumerate(images or [], start=1):
+        if image.get("status") == "ok" and image.get("local"):
+            alt = _clean(image.get("alt")) or f"图片{position:03d}"
+            lines.append(f"{indent}![{alt}]({image['local']})")
+        else:
+            lines.append(f"{indent}> 图片备份失败：原始图片地址已记录在备份清单中。")
+
+
+def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
+                      image_resolver: Any = None) -> None:
     if not isinstance(node, dict):
         return
     indent = "  " * level
+    # 有序列表：字段确认前只在明确给出有序标记时才输出编号
+    list_type = str(node.get("listType") or node.get("list_type") or "").lower()
+    ordered = list_type in ("ordered", "number", "ol") or node.get("ordered") is True
+    marker = "1." if ordered else "-"
     checked = node.get("finish")
     if checked is None:
         checked = node.get("checked")
     if checked is None:
-        lines.append(f"{indent}- {_clean(node.get('text'))}")
+        lines.append(f"{indent}{marker} {_clean(node.get('text'))}")
     else:
-        lines.append(f"{indent}- [{'x' if checked else ' '}] {_clean(node.get('text'))}")
+        lines.append(f"{indent}{marker} [{'x' if checked else ' '}] "
+                     f"{_clean(node.get('text'))}")
+    if image_resolver is not None:
+        _emit_images(image_resolver(node), "  " * (level + 1), lines)
     for child in node.get("children") or []:
-        _node_to_markdown(child, level + 1, lines)
-    note = node.get("note")
-    if note:
-        lines.append(f"{indent}> {_clean(note)}")
+        _node_to_markdown(child, level + 1, lines, image_resolver)
+    _emit_notes(node.get("note"), indent, lines)
 
 
-def tree_to_markdown(tree: dict[str, Any]) -> str:
-    """把幕布文档结构渲染成 Markdown。"""
+def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None) -> str:
+    """把幕布文档结构渲染成 Markdown。
+
+    ``image_resolver`` 由 :func:`make_image_resolver` 提供；不传则完全保持旧行为。
+    """
     nodes = tree.get("nodes") if isinstance(tree, dict) else None
     if not nodes:
         if isinstance(tree, dict) and (tree.get("text") or tree.get("children")):
@@ -60,10 +105,11 @@ def tree_to_markdown(tree: dict[str, Any]) -> str:
         title = _clean(node.get("text"))
         if title:
             lines.append(f"# {title}")
+        if image_resolver is not None:
+            _emit_images(image_resolver(node), "", lines)
         for child in node.get("children") or []:
-            _node_to_markdown(child, 0, lines)
-        if node.get("note"):
-            lines.append(f"> {_clean(node.get('note'))}")
+            _node_to_markdown(child, 0, lines, image_resolver)
+        _emit_notes(node.get("note"), "", lines)
     return "\n".join(lines)
 
 

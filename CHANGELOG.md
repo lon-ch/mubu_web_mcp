@@ -6,6 +6,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
+### Security
+
+- Asset downloads are **HTTPS only**; `http://` is refused outright.
+- URLs carrying a username/password (`https://user:pass@host/…`) are refused.
+- **Redirects are validated hop by hop**: 30x responses are handled manually, every target is
+  checked against the whitelist *before* the next request is sent, and the JWT is only ever
+  attached to `*.mubu.com` hosts. A redirect to a foreign host aborts the download and the
+  foreign URL is never requested.
+- Downloads are bounded by a size limit, a timeout and a redirect-count limit; content that is
+  not an image MIME type is rejected instead of being saved as `.png`.
+- Report/log entries store only a redacted URL (`https://host/…<digest>`), never the full path
+  or query string.
+
+### Added
+
+- Images are downloaded into `<document>.assets/` and **written into the Markdown at the node
+  where they appear**, with relative `/`-separated paths and an `assets.json` index.
+- Failed images produce a visible placeholder in the document and a structured entry in the
+  manifest (node id, redacted address, reason, attempts, timestamp) without losing the document.
+- Ordered naming: sort prefixes (`001 `) restore Mubu's ordering on disk, and can be disabled
+  with `--no-prefix`.
+- Collision-safe names: duplicates within a directory get a stable `__<shortid>` suffix
+  (case-insensitive), Windows reserved names are escaped.
+- Stale handling: renamed/moved documents leave the old file in place, are listed under
+  `stale` in the manifest, and are only moved to `_backup_stale/` by an explicit
+  `backup prune --confirm`. `_backup_stale/` never touches files the tool did not write.
+- `backup verify` (re-hash and compare), `backup report` (human/JSON summary) and
+  `backup prune --dry-run|--confirm` subcommands.
+- Human-readable and JSON reports with per-run statistics (API requests, asset requests,
+  retries, rate-limit hits, duration, average interval); partial failures exit with code 2.
+- Atomic writes for the manifest, state file, Markdown and images (temp + replace); a corrupt
+  manifest is quarantined instead of being overwritten.
+- Multiline notes keep their paragraph structure, and images/ordered lists have a defined
+  Markdown mapping.
+
+### Changed
+
+- Incremental skipping now also compares the document name and target path, so renames,
+  moves and ordering changes are detected instead of silently keeping a stale file.
+- Installer backups are timestamped (`config.toml.20260914-101500.bak`) instead of overwriting
+  one `.bak`; JSON/TOML are validated before replacing, the original is restored on failure,
+  and TOML section matching is exact (a similar section name is no longer deleted).
+- `setup --yes` fails with a clear error when credentials are missing instead of silently
+  dropping into interactive prompts.
+
 ## [0.2.0] - 2026-09-13
 
 ### Added

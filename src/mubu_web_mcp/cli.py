@@ -132,9 +132,67 @@ def cmd_backup(args: argparse.Namespace) -> int:
     """本地备份：直接读写磁盘，内容不经过 AI。"""
     from threading import Event
 
-    from .backup import BackupEngine, BackupOptions
+    from .backup import (
+        BackupEngine,
+        BackupOptions,
+        load_manifest,
+        prune_stale_backup,
+        verify_backup,
+    )
 
     out_dir = Path(args.out).expanduser()
+
+    if args.action == "verify":
+        result = verify_backup(out_dir)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"校验 {out_dir}")
+            print(f"  文档 {result['checkedDocuments']} 篇，资源 {result['checkedAssets']} 个")
+            print(f"  缺失文档：{len(result['missingDocuments'])}")
+            print(f"  内容不一致：{len(result['mismatchedDocuments'])}")
+            print(f"  缺失资源：{len(result['missingAssets'])}")
+            print("  结果：" + ("全部一致" if result["ok"] else "存在问题，见 JSON 输出"))
+        return 0 if result["ok"] else 2
+
+    if args.action == "report":
+        manifest = load_manifest(out_dir)
+        if not manifest:
+            print(f"没有找到 {out_dir} 下的备份清单", file=sys.stderr)
+            return 1
+        stats = manifest.get("stats") or {}
+        if args.json:
+            print(json.dumps({"stats": stats, "stale": manifest.get("stale", []),
+                              "generatedAt": manifest.get("generatedAt")},
+                             ensure_ascii=False, indent=2))
+            return 0
+        print(manifest.get("generatedAt") or "(未知时间)")
+        for key in ("status", "foldersScanned", "documentsSeen", "documentsWritten",
+                    "documentsUpdated", "documentsSkipped", "documentsFailed",
+                    "imagesOk", "imagesFailed", "staleFiles", "apiRequests",
+                    "assetRequests", "retries", "rateLimitHits", "elapsedSeconds"):
+            print(f"  {key}: {stats.get(key)}")
+        stale = manifest.get("stale") or []
+        if stale:
+            print(f"  遗留文件 {len(stale)} 个（用 backup prune --dry-run 查看）")
+        return 0 if stats.get("status") == "ok" else 2
+
+    if args.action == "prune":
+        if not args.dry_run and not args.confirm:
+            print("prune 默认不会移动任何文件。")
+            print("先运行：mubu-web-mcp backup prune --out <目录> --dry-run")
+            print("确认无误后再加 --confirm 执行。")
+            return 0
+        result = prune_stale_backup(out_dir, dry_run=bool(args.dry_run),
+                                    progress=lambda m: print(m, file=sys.stderr))
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            action = "将移动" if result["dryRun"] else "已移动"
+            count = len(result["planned"] if result["dryRun"] else result["moved"])
+            print(f"{action} {count} 个遗留文件")
+        return 0
+
     cancel = Event()
     options = BackupOptions(
         out_dir=out_dir,
@@ -143,8 +201,10 @@ def cmd_backup(args: argparse.Namespace) -> int:
         max_folders=int(args.max_folders),
         max_docs=int(args.max_docs),
         interval_ms=int(args.interval_ms),
-        incremental=not args.no_incremental,
+        incremental=not args.no_incremental and not args.fresh,
         download_assets=bool(args.assets),
+        sort_prefix=not args.no_prefix,
+        prune_stale=bool(args.prune_stale),
         dry_run=bool(args.dry_run),
         cancel_event=cancel,
         progress=(lambda message: print(message, file=sys.stderr, flush=True)),
@@ -154,6 +214,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
     print(f"备份到：{out_dir}")
     print(f"范围：目录 {options.folder_id}，间隔 {options.interval_ms}ms，"
           f"增量={'开' if options.incremental else '关'}，"
+          f"排序前缀={'开' if options.sort_prefix else '关'}，"
           f"图片={'开' if options.download_assets else '关'}")
     try:
         stats = engine.run()
@@ -163,17 +224,9 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     else:
-        print("\n备份完成：")
-        print(f"  扫描目录 {stats['foldersScanned']} 个，看到文档 {stats['documentsSeen']} 篇")
-        print(f"  写入 {stats['documentsWritten']} 篇，"
-              f"跳过（未变更）{stats['documentsSkipped']} 篇，"
-              f"失败 {stats['documentsFailed']} 篇")
-        print(f"  图片下载 {stats['assetsDownloaded']} 个，跳过 {stats['assetsSkipped']} 个")
-        if stats["errors"]:
-            print("  错误：")
-            for message in stats["errors"]:
-                print(f"    - {message}")
-    return 0
+        print()
+        print(engine.report_text())
+    return 0 if stats["status"] == "ok" else 2
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -258,6 +311,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_backup = sub.add_parser("backup", help="把账号内容备份到本地目录（不经过 AI 模型）")
+    p_backup.add_argument("action", nargs="?", default="run",
+                          choices=["run", "verify", "report", "prune"],
+                          help="run（默认）/ verify / report / prune")
     p_backup.add_argument("--out", required=True, help="输出目录")
     p_backup.add_argument("--folder", default="0", help="起始目录 id，默认根目录 0")
     p_backup.add_argument("--interval-ms", type=int, default=2000,
@@ -267,8 +323,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument("--max-docs", type=int, default=5000)
     p_backup.add_argument("--no-incremental", action="store_true",
                           help="关闭增量：所有文档都重新拉取")
+    p_backup.add_argument("--resume", action="store_true",
+                          help="从上次中断处继续（默认行为，保留此参数以兼容脚本）")
+    p_backup.add_argument("--fresh", action="store_true",
+                          help="忽略上次的进度状态，重新全量扫描")
+    p_backup.add_argument("--no-prefix", action="store_true",
+                          help="不在文件名/目录名前加排序序号")
     p_backup.add_argument("--assets", action="store_true",
                           help="同时下载幕布域名下的图片（实验性）")
+    p_backup.add_argument("--image-field", action="append", default=None,
+                          help="指定图片字段名（可重复）；不指定时按字段名与后缀启发式判断")
+    p_backup.add_argument("--prune-stale", action="store_true",
+                          help="把遗留文件移动到 _backup_stale/（默认只报告）")
+    p_backup.add_argument("--confirm", action="store_true",
+                          help="prune 时真正执行（否则只提示）")
     p_backup.add_argument("--dry-run", action="store_true", help="只列出将要备份的内容")
     p_backup.add_argument("--json", action="store_true", help="以 JSON 输出统计")
     p_backup.set_defaults(func=cmd_backup)

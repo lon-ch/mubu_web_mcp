@@ -42,7 +42,41 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("other", data["mcpServers"])
         self.assertEqual(data["mcpServers"][installer.SERVER_KEY]["args"],
                          ["-m", "mubu_web_mcp"])
-        self.assertTrue(path.with_suffix(path.suffix + ".bak").exists())
+        self.assertTrue(list(path.parent.glob(f"{path.name}.*.bak")))
+
+    def test_backups_are_timestamped_not_overwritten(self):
+        path = self.root / "config.json"
+        path.write_text("{}", encoding="utf-8")
+        first = installer._backup(path)
+        second = installer._backup(path)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.exists() and second.exists())
+
+    def test_invalid_toml_is_skipped(self):
+        path = self.root / "broken.toml"
+        path.write_text("this is = = not toml\n", encoding="utf-8")
+        message = installer._write_toml(path, installer.entry_for(installer.AGENTS["codex"]))
+        if installer.tomllib is None:  # 3.10 上跳过校验
+            self.skipTest("该解释器没有 tomllib")
+        self.assertIn("跳过", message)
+        self.assertEqual(path.read_text(encoding="utf-8"), "this is = = not toml\n")
+
+    def test_similar_section_names_are_preserved(self):
+        path = self.root / "config.toml"
+        path.write_text(
+            '[mcp_servers.mubu_web_mcp_extra]\ncommand = "keep-me"\n', encoding="utf-8")
+        installer._write_toml(path, installer.entry_for(installer.AGENTS["codex"]))
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("keep-me", text)
+        self.assertIn('[mcp_servers.mubu_web_mcp]', text)
+
+    def test_unknown_keys_and_sections_preserved(self):
+        path = self.root / "config.toml"
+        path.write_text('[other]\nkeep = true\n[model]\nname = "x"\n', encoding="utf-8")
+        installer._write_toml(path, installer.entry_for(installer.AGENTS["codex"]))
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("keep = true", text)
+        self.assertIn('name = "x"', text)
 
     def test_json_write_reports_invalid_existing_file(self):
         path = self.root / "broken.json"

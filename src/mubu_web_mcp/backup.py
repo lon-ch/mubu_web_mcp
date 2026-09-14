@@ -1,24 +1,30 @@
 """本地备份引擎：在本机完成读取与落盘，内容**不经过 AI 模型**。
 
-架构上刻意与 MCP 工具分开：
-
     MubuClient ──┬── MCP 工具      （低频对话查询，内容会进模型上下文）
                  └── BackupEngine  （用户主动发起的本地备份，内容只落磁盘）
 
-只读保证：引擎只调用 ``list_dir`` / ``get_doc``（以及可选的图片下载），
-没有任何写入幕布的路径。
+安全边界（本模块最需要 review 的部分）：
 
-特性：递归索引、按 folder 范围、增量（未变更文档不发请求）、断点续传、
-频率控制（默认 2 秒）、失败重试（由 client 负责）、脱敏日志（不含正文）。
+* 资源下载只允许 ``https://`` 且主机名属于 ``mubu.com`` 及其子域；
+* 拒绝带用户名/口令的 URL，拒绝 ``mubu.com.example.com``、``evil-mubu.com`` 这类仿冒域名；
+* **逐跳校验重定向**：自己在循环里处理 30x，每一跳都先校验目标再发请求，
+  只在允许的幕布域名上附带 JWT，永远不会把凭据转发给别的域名；
+* 限制单文件大小、请求超时与重定向次数，并且只接受图片 MIME 类型
+  （避免把 HTML 错误页存成 .png）。
+
+只读保证：引擎只调用 ``list_dir`` / ``get_doc`` 与资源 GET，没有任何写入幕布的路径。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import time
+import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -30,40 +36,226 @@ from typing import Any
 from . import mubu_markdown
 from .mubu_client import MubuClient, MubuError
 
-MANIFEST_NAME = "manifest.json"
+MANIFEST_NAME = "backup-manifest.json"
 STATE_NAME = ".backup-state.json"
-ASSETS_DIR_SUFFIX = ".assets"
+STALE_DIR = "_backup_stale"
+ASSETS_SUFFIX = ".assets"
+REPORT_NAME = "backup-report.json"
 
-# 图片/附件下载白名单：只允许幕布自己的域名（含子域），并在重定向后再校验一次。
-# 注意用 ".mubu.com" 而不是 "mubu.com" 作为后缀，否则 notmubu.com 也会被放行。
+# 资源白名单：只允许 https + 幕布自己的域名（".mubu.com" 后缀可避免 notmubu.com 混进来）
+ALLOWED_ASSET_SCHEME = "https"
 ASSET_HOST_SUFFIXES = (".mubu.com",)
+ASSET_BARE_HOST = "mubu.com"
 
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic")
+MAX_REDIRECTS = 5
+DEFAULT_MAX_ASSET_BYTES = 20 * 1024 * 1024
+
+MIME_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+    "image/heic": ".heic",
+    "image/tiff": ".tiff",
+}
+IMAGE_EXTENSIONS = tuple(sorted(set(MIME_EXTENSIONS.values())))
+
+# 明显是图片的字段名（在真实文档上确认后可用 --image-field 精确指定）
+IMAGE_FIELD_HINTS = ("img", "image", "pic", "photo", "picture", "thumbnail", "cover")
+LINK_FIELD_HINTS = ("link", "href", "refer", "target")
 
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 
+
+class BackupError(RuntimeError):
+    """备份过程中的可恢复错误。"""
+
+
+class AssetBlockedError(BackupError):
+    """资源地址未通过安全校验，或跳转到了不允许的域名。"""
+
+
+# ---------------------------------------------------------------------------
+# 文件名与排序
+# ---------------------------------------------------------------------------
 
 def safe_filename(name: str, fallback: str = "untitled", max_length: int = 80) -> str:
-    """把文档名变成安全的文件名。"""
-    cleaned = _UNSAFE_FILENAME.sub("_", str(name or "")).strip().strip(".")
-    cleaned = re.sub(r"\s+", " ", cleaned)
+    """把标题变成跨平台安全的文件名（Windows 保留名、控制字符、尾随点等）。"""
+    cleaned = unicodedata.normalize("NFC", str(name or ""))
+    cleaned = _UNSAFE_FILENAME.sub("_", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".")
     if not cleaned:
         cleaned = fallback
-    return cleaned[:max_length].rstrip(". ")
+    stem = cleaned.split(".")[0].lower()
+    if stem in _WINDOWS_RESERVED:
+        cleaned = f"_{cleaned}"
+    cleaned = cleaned[:max_length].rstrip(". ")
+    return cleaned or fallback
 
+
+def short_id(value: str, length: int = 6) -> str:
+    return str(value or "")[:length] or "unknown"
+
+
+class NameAllocator:
+    """同一目录内分配不冲突的文件/文件夹名（大小写不敏感，冲突时追加短 ID）。"""
+
+    def __init__(self) -> None:
+        self._used: dict[str, set[str]] = {}
+
+    def allocate(self, parent: str, name: str, item_id: str, suffix: str = "") -> str:
+        key = parent.casefold()
+        used = self._used.setdefault(key, set())
+        candidate = f"{name}{suffix}"
+        if candidate.casefold() not in used:
+            used.add(candidate.casefold())
+            return candidate
+        candidate = f"{name}__{short_id(item_id)}{suffix}"
+        counter = 2
+        while candidate.casefold() in used:
+            candidate = f"{name}__{short_id(item_id)}-{counter}{suffix}"
+            counter += 1
+        used.add(candidate.casefold())
+        return candidate
+
+
+def sort_prefix(order: Any, fallback_index: int, width: int = 3) -> str:
+    """排序前缀：优先用接口排序字段，取不到就用接口返回顺序。"""
+    value = order if isinstance(order, int) and order >= 0 else fallback_index
+    return f"{value + 1:0{width}d} "
+
+
+# ---------------------------------------------------------------------------
+# 资源安全
+# ---------------------------------------------------------------------------
 
 def is_allowed_asset_url(url: str) -> bool:
-    """严格校验：只有 https 且主机名属于幕布域名白名单才允许下载。"""
-    if not url:
+    """严格校验资源地址：https、无用户名口令、主机名属于幕布域名。"""
+    if not url or not isinstance(url, str):
         return False
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme not in ("https", "http"):
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
         return False
-    host = (parts.hostname or "").lower()
+    if parts.scheme != ALLOWED_ASSET_SCHEME:
+        return False
+    if parts.username or parts.password:
+        return False
+    if parts.port not in (None, 443):
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
     if not host:
         return False
-    return host == "mubu.com" or host.endswith(ASSET_HOST_SUFFIXES)
+    return host == ASSET_BARE_HOST or host.endswith(ASSET_HOST_SUFFIXES)
 
+
+def redact_url(url: str, digest_length: int = 8) -> str:
+    """把地址变成可以写进日志/报告的脱敏形式：只保留主机名与内容摘要。"""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<invalid-url>"
+    host = parts.hostname or "unknown"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:digest_length]
+    return f"https://{host}/…{digest}"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁用 urllib 的自动跳转，改由我们自己逐跳校验。"""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: D102
+        return None
+
+
+@dataclass
+class AssetPayload:
+    data: bytes
+    mime: str
+    final_url: str
+
+
+def fetch_asset(url: str, token: str, *, timeout: float = 20.0,
+                max_bytes: int = DEFAULT_MAX_ASSET_BYTES,
+                opener: Any | None = None) -> AssetPayload:
+    """下载一个幕布资源，逐跳校验重定向，绝不把令牌发给非幕布域名。"""
+    current = url
+    open_url = opener or urllib.request.build_opener(_NoRedirect()).open
+    for _hop in range(MAX_REDIRECTS + 1):
+        if not is_allowed_asset_url(current):
+            raise AssetBlockedError(f"资源地址未通过白名单校验：{redact_url(current)}")
+        headers = {"User-Agent": "mubu-web-mcp/backup"}
+        if token:
+            # 只有已经通过校验的幕布域名才会拿到令牌
+            headers["Jwt-Token"] = token
+        request = urllib.request.Request(current, headers=headers, method="GET")
+        try:
+            response = open_url(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get("Location") if exc.headers else None
+            if exc.code in (301, 302, 303, 307, 308) and location:
+                target = urllib.parse.urljoin(current, location)
+                if not is_allowed_asset_url(target):
+                    raise AssetBlockedError(
+                        f"重定向目标不在白名单内：{redact_url(target)}") from None
+                current = target
+                continue
+            raise BackupError(f"资源请求失败（HTTP {exc.code}）") from None
+        with response:
+            payload = response.read(max_bytes + 1)
+            if len(payload) > max_bytes:
+                raise BackupError(f"资源超过大小上限（>{max_bytes} 字节）")
+            mime = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            final_url = response.geturl() if hasattr(response, "geturl") else current
+        if not is_allowed_asset_url(final_url):
+            raise AssetBlockedError(f"最终地址不在白名单内：{redact_url(final_url)}")
+        return AssetPayload(data=payload, mime=mime, final_url=final_url)
+    raise BackupError("重定向次数过多")
+
+
+def guess_extension(url: str, mime: str) -> str | None:
+    """扩展名优先用 MIME，其次用 URL 后缀。"""
+    if mime in MIME_EXTENSIONS:
+        return MIME_EXTENSIONS[mime]
+    suffix = Path(urllib.parse.urlsplit(url).path).suffix.lower()
+    return suffix if suffix in IMAGE_EXTENSIONS else None
+
+
+# ---------------------------------------------------------------------------
+# 原子写入
+# ---------------------------------------------------------------------------
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    with open(tmp, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 配置与统计
+# ---------------------------------------------------------------------------
 
 @dataclass
 class BackupOptions:
@@ -75,10 +267,12 @@ class BackupOptions:
     interval_ms: int = 2000
     incremental: bool = True
     download_assets: bool = False
+    sort_prefix: bool = True
+    prune_stale: bool = False
     dry_run: bool = False
+    image_fields: tuple[str, ...] = ()
     cancel_event: Event | None = None
     progress: Callable[[str], None] | None = None
-    asset_url_resolver: Callable[[str], dict[str, str]] | None = None
 
 
 @dataclass
@@ -86,24 +280,58 @@ class BackupStats:
     folders_scanned: int = 0
     documents_seen: int = 0
     documents_written: int = 0
+    documents_updated: int = 0
     documents_skipped: int = 0
     documents_failed: int = 0
-    assets_downloaded: int = 0
-    assets_skipped: int = 0
+    images_ok: int = 0
+    images_failed: int = 0
+    images_skipped: int = 0
+    links_converted: int = 0
+    links_failed: int = 0
+    stale_files: int = 0
+    api_requests: int = 0
+    asset_requests: int = 0
+    retries: int = 0
+    rate_limit_hits: int = 0
+    elapsed_seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        if self.documents_failed or self.images_failed or self.errors:
+            return "partial"
+        return "ok"
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "status": self.status,
             "foldersScanned": self.folders_scanned,
             "documentsSeen": self.documents_seen,
             "documentsWritten": self.documents_written,
+            "documentsUpdated": self.documents_updated,
             "documentsSkipped": self.documents_skipped,
             "documentsFailed": self.documents_failed,
-            "assetsDownloaded": self.assets_downloaded,
-            "assetsSkipped": self.assets_skipped,
-            "errors": self.errors[:20],
+            "imagesOk": self.images_ok,
+            "imagesFailed": self.images_failed,
+            "imagesSkipped": self.images_skipped,
+            "linksConverted": self.links_converted,
+            "linksFailed": self.links_failed,
+            "staleFiles": self.stale_files,
+            "apiRequests": self.api_requests,
+            "assetRequests": self.asset_requests,
+            "retries": self.retries,
+            "rateLimitHits": self.rate_limit_hits,
+            "elapsedSeconds": round(self.elapsed_seconds, 2),
+            "averageIntervalMs": (
+                round(self.elapsed_seconds * 1000 / self.api_requests, 1)
+                if self.api_requests else None),
+            "errors": self.errors[:50],
         }
 
+
+# ---------------------------------------------------------------------------
+# 引擎
+# ---------------------------------------------------------------------------
 
 class BackupEngine:
     def __init__(self, client: MubuClient, options: BackupOptions) -> None:
@@ -114,15 +342,15 @@ class BackupEngine:
         self.state_path = self.out_dir / STATE_NAME
         self.stats = BackupStats()
         self.manifest: dict[str, Any] = {
-            "version": 1,
-            "generatedAt": None,
-            "rootFolderId": options.folder_id,
-            "entries": {},
-            "folders": [],
+            "version": 2, "generatedAt": None, "rootFolderId": options.folder_id,
+            "folders": {}, "entries": {}, "assets": {}, "stale": [],
         }
         self.state: dict[str, Any] = {"queue": [], "processed": []}
+        self.names = NameAllocator()
+        self.stale_candidates: list[dict[str, str]] = []
+        self._started = time.time()
 
-    # ---- 基础工具 ----------------------------------------------------
+    # ---- 基础 --------------------------------------------------------
 
     def _say(self, message: str) -> None:
         if self.options.progress is not None:
@@ -132,51 +360,73 @@ class BackupEngine:
         if self.options.cancel_event is not None and self.options.cancel_event.is_set():
             raise KeyboardInterrupt("备份已暂停")
 
+    def _api_requests_before(self) -> int:
+        return int(self.client.stats.get("requests", 0))
+
     def _load_existing(self) -> None:
         if self.manifest_path.exists():
-            try:
-                self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
+            loaded = load_json(self.manifest_path)
+            if loaded is None:
+                # manifest 损坏：先留档再重建，绝不让损坏文件继续扩散
+                broken = self.manifest_path.with_name(
+                    f"{MANIFEST_NAME}.corrupt-{int(time.time())}")
+                try:
+                    shutil.move(str(self.manifest_path), str(broken))
+                    self.stats.errors.append(
+                        f"原有 {MANIFEST_NAME} 无法解析，已移动到 {broken.name} 并重建")
+                except OSError:
+                    self.stats.errors.append(f"原有 {MANIFEST_NAME} 无法解析")
+            elif isinstance(loaded, dict):
+                self.manifest.update(loaded)
+                self.manifest.setdefault("folders", {})
+                self.manifest.setdefault("entries", {})
+                self.manifest.setdefault("assets", {})
+                self.manifest.setdefault("stale", [])
         if self.state_path.exists():
-            try:
-                self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
+            loaded = load_json(self.state_path)
+            if isinstance(loaded, dict):
+                self.state = loaded
 
     def _save_state(self) -> None:
+        if self.options.dry_run:
+            return
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(self.state_path, json.dumps(self.state, ensure_ascii=False, indent=2))
 
     def _drop_state(self) -> None:
         if self.state_path.exists():
             self.state_path.unlink()
+
+    def _save_manifest(self) -> None:
+        if self.options.dry_run:
+            return
+        atomic_write_text(self.manifest_path,
+                          json.dumps(self.manifest, ensure_ascii=False, indent=2))
 
     # ---- 主流程 ------------------------------------------------------
 
     def run(self) -> dict[str, Any]:
         self._load_existing()
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        # 备份默认更保守的间隔（评审建议 2 秒）
         self.client.min_interval = max(
             self.client.min_interval, self.options.interval_ms / 1000.0)
+        api_before = self._api_requests_before()
+        retries_before = int(self.client.stats.get("retries", 0))
+        limit_before = int(self.client.stats.get("rate_limit_waits", 0))
 
         queue: list[tuple[str, str, int]] = [(self.options.folder_id, "", 0)]
         if self.options.incremental and self.state.get("queue"):
             queue = [tuple(item) for item in self.state["queue"]]  # type: ignore[arg-type]
             self._say(f"从上次中断处继续，剩余 {len(queue)} 个目录")
 
-        processed_docs: set[str] = set(self.state.get("processed") or [])
-        next_index = 1 + max(
-            (int(entry.get("index", 0)) for entry in self.manifest["entries"].values()),
-            default=0)
+        processed: set[str] = set(self.state.get("processed") or [])
+        seen_paths: set[str] = set()
 
         while queue:
             self._check_cancelled()
             folder_id, path, depth = queue.pop(0)
             if self.stats.folders_scanned >= self.options.max_folders:
-                self.stats.errors.append("达到目录数量上限，已停止（可调大 max_folders）")
+                self.stats.errors.append("达到目录数量上限，已停止（可调大 max-folders）")
                 break
             if depth > self.options.max_depth:
                 continue
@@ -191,183 +441,437 @@ class BackupEngine:
 
             subfolders = data.get("folders") or []
             docs = data.get("documents") or data.get("docs") or []
-            if not any(f.get("id") == folder_id and f.get("path") == path
-                       for f in self.manifest["folders"]):
-                self.manifest["folders"].append(
-                    {"id": folder_id, "path": path, "documents": len(docs),
-                     "folders": len(subfolders)})
+            self.manifest["folders"][folder_id] = {
+                "id": folder_id, "path": path, "parentId": data.get("folderId", folder_id),
+                "documentCount": len(docs), "folderCount": len(subfolders),
+            }
 
-            for folder in subfolders:
+            for position, folder in enumerate(subfolders):
+                self._check_cancelled()
                 sub_id = str(folder.get("id"))
-                sub_path = f"{path}{safe_filename(folder.get('name'))}/"
-                queue.append((sub_id, sub_path, depth + 1))
+                name = safe_filename(folder.get("name"), fallback=sub_id)
+                prefix = sort_prefix(folder.get("seq", folder.get("order")), position) \
+                    if self.options.sort_prefix else ""
+                allocated = self.names.allocate(path, f"{prefix}{name}", sub_id)
+                queue.append((sub_id, f"{path}{allocated}/", depth + 1))
 
-            for doc in docs:
+            for position, doc in enumerate(docs):
                 self._check_cancelled()
                 if self.stats.documents_seen >= self.options.max_docs:
-                    self.stats.errors.append("达到文档数量上限，已停止（可调大 max_docs）")
+                    self.stats.errors.append("达到文档数量上限，已停止（可调大 max-docs）")
                     queue.clear()
                     break
                 self.stats.documents_seen += 1
                 doc_id = str(doc.get("id"))
-                if doc_id in processed_docs:
+                if doc_id in processed:
                     continue
                 try:
-                    written, index = self._handle_document(doc, path, next_index)
-                except MubuError as exc:
+                    self._handle_document(doc, path, position)
+                    seen_paths.add(self.manifest["entries"].get(doc_id, {}).get("path", ""))
+                except KeyboardInterrupt:
+                    self._save_state()
+                    raise
+                except (MubuError, BackupError, OSError) as exc:
                     self.stats.documents_failed += 1
                     self.stats.errors.append(f"文档 {doc_id} 处理失败：{exc}")
-                    continue
-                if written:
-                    next_index = max(next_index, index + 1)
-                processed_docs.add(doc_id)
+                processed.add(doc_id)
 
-            # 每处理完一个目录就落一次状态，保证可续传
             self.state = {"queue": [list(item) for item in queue],
-                          "processed": sorted(processed_docs)}
-            if not self.options.dry_run:
-                self._save_state()
+                          "processed": sorted(processed)}
+            self._save_state()
+
+        self._mark_stale(seen_paths)
+        if self.options.prune_stale:
+            self._prune_stale()
+
+        self.stats.api_requests = max(0, self._api_requests_before() - api_before)
+        self.stats.retries = max(0, int(self.client.stats.get("retries", 0)) - retries_before)
+        self.stats.rate_limit_hits = max(
+            0, int(self.client.stats.get("rate_limit_waits", 0)) - limit_before)
+        self.stats.elapsed_seconds = time.time() - self._started
 
         self.manifest["generatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         self.manifest["stats"] = self.stats.as_dict()
-        if not self.options.dry_run:
-            self._write_manifest()
+        self._save_manifest()
+        self._write_report()
+        if not self.options.dry_run and self.stats.status == "ok":
             self._drop_state()
-        return self.manifest["stats"]
+        return self.stats.as_dict()
+
+    # ---- 旧的遗留文件 ------------------------------------------------
+
+    def _mark_stale(self, seen_paths: set[str]) -> None:
+        stale: list[dict[str, str]] = list(self.stale_candidates)
+        known = {item["path"] for item in stale}
+        for doc_id, entry in self.manifest["entries"].items():
+            path = entry.get("file") or entry.get("path")
+            if not path or path in seen_paths or path in known:
+                continue
+            target = self.out_dir / path
+            if target.exists():
+                stale.append({"path": path, "docId": doc_id, "reason": "路径已变化"})
+                known.add(path)
+        self.manifest["stale"] = stale
+        self.stats.stale_files = len(stale)
+
+    def _prune_stale(self) -> None:
+        """把遗留文件移到 _backup_stale/（默认关闭，需显式 --prune-stale）。"""
+        for item in list(self.manifest["stale"]):
+            source = self.out_dir / item["path"]
+            if not source.exists():
+                continue
+            destination = self.out_dir / STALE_DIR / item["path"]
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(destination))
+                item["movedTo"] = f"{STALE_DIR}/{item['path']}"
+            except OSError as exc:
+                self.stats.errors.append(f"移动遗留文件失败 {item['path']}：{exc}")
 
     # ---- 单篇文档 ----------------------------------------------------
 
-    def _handle_document(self, doc: dict[str, Any], path: str,
-                         next_index: int) -> tuple[bool, int]:
+    def _handle_document(self, doc: dict[str, Any], path: str, position: int) -> None:
         doc_id = str(doc.get("id"))
         name = str(doc.get("name") or doc_id)
-        entry = self.manifest["entries"].get(doc_id)
+        entry = self.manifest["entries"].get(doc_id) or {}
+        update_time = doc.get("updateTime")
 
-        # 增量：更新时间没变且文件还在，就直接跳过（连接口都不用调）
-        if self.options.incremental and entry:
-            existing = self.out_dir / entry.get("file", "")
-            if (entry.get("updateTime") == doc.get("updateTime")
-                    and entry.get("file") and existing.exists()):
-                self.stats.documents_skipped += 1
-                return False, int(entry.get("index") or next_index)
-
-        index = int(entry.get("index")) if entry and entry.get("index") else next_index
-        filename = f"{index:04d}-{safe_filename(name, fallback=doc_id)}.md"
+        prefix = sort_prefix(doc.get("seq", doc.get("order")), position) \
+            if self.options.sort_prefix else ""
+        filename = self.names.allocate(
+            path, f"{prefix}{safe_filename(name, fallback=doc_id)}", doc_id, ".md")
         rel_path = f"{path}{filename}"
         target = self.out_dir / rel_path
 
+        # 增量判断：更新时间、标题、目标路径都没变才算"未变化"，
+        # 这样改名、移动、排序变化都能被发现并更新路径。
+        if (self.options.incremental and entry.get("updateTime") == update_time
+                and entry.get("name") == name
+                and entry.get("file") == rel_path
+                and entry.get("status") == "ok"
+                and target.exists()):
+            self.stats.documents_skipped += 1
+            return
+
+        # 改名或移动后，旧路径要作为遗留文件记录下来（默认只报告，不删除）
+        previous = entry.get("file")
+        if previous and previous != rel_path and (self.out_dir / previous).exists():
+            self.stale_candidates.append(
+                {"path": previous, "docId": doc_id, "reason": "文档改名或移动"})
+
         if self.options.dry_run:
             self._say(f"[文档] {rel_path}（dry-run）")
-            return True, index
+            return
 
         raw = self.client.get_doc(doc_id)
         tree = self.client.doc_tree(raw)
-        markdown = mubu_markdown.tree_to_markdown(tree)
 
-        assets: list[dict[str, str]] = []
+        asset_records: list[dict[str, Any]] = []
+        resolver = None
         if self.options.download_assets:
-            assets = self._download_assets(tree, target)
-            for asset in assets:
-                markdown = markdown.replace(asset["url"], asset["local"])
+            asset_records = self._download_images(doc_id, tree, target)
+            resolver = mubu_markdown.make_image_resolver(
+                asset_records, self.options.image_fields)
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(markdown if markdown.endswith("\n") else markdown + "\n",
-                          encoding="utf-8")
-        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        markdown = mubu_markdown.tree_to_markdown(tree, image_resolver=resolver)
+        atomic_write_text(target, markdown if markdown.endswith("\n") else markdown + "\n")
+
+        ok_images = sum(1 for a in asset_records if a["status"] == "ok")
+        failed_images = sum(1 for a in asset_records if a["status"] != "ok")
         self.manifest["entries"][doc_id] = {
             "id": doc_id,
+            "folderId": doc.get("folderId", self.options.folder_id),
             "name": name,
-            "index": index,
-            "path": rel_path,
             "file": rel_path,
-            "updatedAt": doc.get("updateTime"),
-            "updateTime": doc.get("updateTime"),
+            "path": rel_path,
+            "updateTime": update_time,
+            "lastBackedUpAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "baseVersion": raw.get("baseVersion"),
             "size": target.stat().st_size,
-            "sha256": digest,
-            "assets": assets,
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "images": {"total": len(asset_records), "ok": ok_images, "failed": failed_images},
+            "links": {"total": 0, "converted": 0, "failed": 0},
+            "status": "ok" if not failed_images else "partial",
         }
-        self.stats.documents_written += 1
-        self._say(f"[文档] {rel_path} ({len(markdown)} 字符)")
-        return True, index
+        self.manifest["assets"][doc_id] = asset_records
+        if entry.get("file"):
+            self.stats.documents_updated += 1
+        else:
+            self.stats.documents_written += 1
+        self._say(f"[文档] {rel_path}"
+                  f"（{len(markdown)} 字符，图片 {ok_images}/{len(asset_records)}）")
 
-    # ---- 图片 / 附件（实验性，等接口字段确认后收紧） ------------------
+    # ---- 图片 --------------------------------------------------------
 
-    def _iter_urls(self, node: Any) -> list[str]:
-        found: list[str] = []
-        if isinstance(node, dict):
-            for value in node.values():
-                found.extend(self._iter_urls(value))
-        elif isinstance(node, list):
-            for item in node:
-                found.extend(self._iter_urls(item))
-        elif isinstance(node, str) and node.startswith(("http://", "https://")):
-            found.append(node)
+    def _iter_nodes(self, nodes: Any):
+        if isinstance(nodes, list):
+            for node in nodes:
+                yield from self._iter_nodes(node)
+        elif isinstance(nodes, dict):
+            yield nodes
+            yield from self._iter_nodes(nodes.get("children") or [])
+
+    def _image_urls_of(self, node: dict[str, Any]) -> list[tuple[str, str]]:
+        """返回 (url, 说明) 列表，保持节点内的原始顺序。"""
+        explicit = set(self.options.image_fields)
+        found: list[tuple[str, str]] = []
+
+        def looks_like_image(key: str, url: str) -> bool:
+            if explicit:
+                return key in explicit
+            if any(hint in key.lower() for hint in LINK_FIELD_HINTS):
+                return False
+            if any(hint in key.lower() for hint in IMAGE_FIELD_HINTS):
+                return True
+            return url.split("?")[0].lower().endswith(IMAGE_EXTENSIONS)
+
+        def walk(value: Any, key: str, alt: str = "") -> None:
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                if looks_like_image(key, value):
+                    found.append((value, alt))
+            elif isinstance(value, dict):
+                alt = str(value.get("name") or value.get("alt") or value.get("desc") or alt)
+                for sub_key, sub_value in value.items():
+                    walk(sub_value, sub_key, alt)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, key, alt)
+
+        for key, value in node.items():
+            if key == "children":
+                continue
+            walk(value, key)
         return found
 
-    def _download_assets(self, tree: dict[str, Any], target: Path) -> list[dict[str, str]]:
-        urls: list[str] = []
-        for url in self._iter_urls(tree.get("nodes") or []):
-            if not is_allowed_asset_url(url):
-                continue
-            if url.lower().endswith(IMAGE_EXTENSIONS) or "img" in url.lower():
-                if url not in urls:
-                    urls.append(url)
+    def _download_images(self, doc_id: str, tree: dict[str, Any],
+                         target: Path) -> list[dict[str, Any]]:
+        nodes = list(self._iter_nodes(tree.get("nodes") or []))
+        assets_dir = target.with_name(f"{target.stem}{ASSETS_SUFFIX}")
+        records: list[dict[str, Any]] = []
+        by_url: dict[str, dict[str, Any]] = {}
+        counter = 0
 
-        results: list[dict[str, str]] = []
-        if not urls:
-            return results
-        assets_dir = target.with_suffix("") .parent / f"{target.stem}{ASSETS_DIR_SUFFIX}"
-        assets_dir.mkdir(parents=True, exist_ok=True)
-
-        for position, url in enumerate(urls, start=1):
-            self._check_cancelled()
-            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
-            suffix = Path(urllib.parse.urlsplit(url).path).suffix.lower()
-            if suffix not in IMAGE_EXTENSIONS:
-                suffix = ".bin"
-            filename = f"{position:03d}-{digest}{suffix}"
-            destination = assets_dir / filename
-            if destination.exists():
-                self.stats.assets_skipped += 1
-            else:
-                try:
-                    self._fetch_asset(url, destination)
-                    self.stats.assets_downloaded += 1
-                except (MubuError, OSError) as exc:
-                    self.stats.errors.append(f"图片下载失败（{digest}）：{exc}")
+        for node in nodes:
+            for url, alt in self._image_urls_of(node):
+                self._check_cancelled()
+                if not is_allowed_asset_url(url):
+                    self.stats.images_failed += 1
+                    records.append(self._image_record(doc_id, node, url, alt, "blocked",
+                                                      "地址未通过白名单校验", None))
+                    self.stats.errors.append(
+                        f"图片地址被拒绝（{redact_url(url)}）")
                     continue
-            relative = f"./{assets_dir.name}/{filename}"
-            results.append({"url": url, "local": relative, "file": filename})
-        return results
+                if url in by_url:  # 同文档内重复图片复用同一个文件
+                    records.append({**by_url[url], "nodeId": node.get("id"), "alt": alt})
+                    self.stats.images_skipped += 1
+                    continue
+                counter += 1
+                record = self._fetch_image(doc_id, node, url, alt, assets_dir, counter)
+                records.append(record)
+                by_url[url] = record
 
-    def _fetch_asset(self, url: str, destination: Path) -> None:
-        """下载单个资源：白名单 + 重定向后再校验 + 不把 token 发给第三方域名。"""
-        if not is_allowed_asset_url(url):
-            raise MubuError("图片地址不在幕布域名白名单内")
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "mubu-web-mcp/backup",
-                     "Jwt-Token": self.client.ensure_token()})
-        with urllib.request.urlopen(request, timeout=self.client.timeout) as response:
-            final_url = response.geturl()
-            if not is_allowed_asset_url(final_url):
-                raise MubuError("图片重定向到了非幕布域名，已拒绝保存")
-            payload = response.read()
-        tmp = destination.with_suffix(destination.suffix + ".part")
-        tmp.write_bytes(payload)
-        tmp.replace(destination)
+        if records:
+            atomic_write_text(
+                assets_dir / "assets.json",
+                json.dumps(records, ensure_ascii=False, indent=2))
+        return records
 
-    def _write_manifest(self) -> None:
-        self.manifest_path.write_text(
-            json.dumps(self.manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _image_record(self, doc_id: str, node: dict[str, Any], url: str, alt: str,
+                      status: str, reason: str | None, local: str | None,
+                      mime: str | None = None, size: int | None = None,
+                      attempts: int = 0) -> dict[str, Any]:
+        return {
+            "docId": doc_id,
+            "nodeId": node.get("id"),
+            "alt": alt or None,
+            "sourceRedacted": redact_url(url),
+            "sourceHost": urllib.parse.urlsplit(url).hostname if url else None,
+            "local": local,
+            "mime": mime,
+            "size": size,
+            "sha256": None,
+            "status": status,
+            "reason": reason,
+            "attempts": attempts,
+            "lastAttemptAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+
+    def _fetch_image(self, doc_id: str, node: dict[str, Any], url: str, alt: str,
+                     assets_dir: Path, position: int) -> dict[str, Any]:
+        attempts = 0
+        last_error: str | None = None
+        while attempts <= self.client.max_retries:
+            attempts += 1
+            self.stats.asset_requests += 1
+            try:
+                payload = fetch_asset(url, self.client.ensure_token(),
+                                      timeout=self.client.timeout)
+            except AssetBlockedError as exc:
+                record = self._image_record(doc_id, node, url, alt, "blocked", str(exc),
+                                            None, attempts=attempts)
+                self.stats.images_failed += 1
+                self.stats.errors.append(f"图片被拒绝：{exc}")
+                return record
+            except (BackupError, MubuError, OSError) as exc:
+                last_error = str(exc)
+                if attempts <= self.client.max_retries:
+                    self.stats.retries += 1
+                    continue
+                break
+
+            if payload.mime and not payload.mime.startswith("image/"):
+                last_error = f"返回内容不是图片（{payload.mime}）"
+                break
+            extension = guess_extension(payload.final_url, payload.mime)
+            if extension is None:
+                last_error = "无法确定图片类型（既没有图片 MIME 也没有可识别后缀）"
+                break
+
+            filename = f"{position:03d}{extension}"
+            local = f"{assets_dir.name}/{filename}"
+            atomic_write_bytes(assets_dir / filename, payload.data)
+            self.stats.images_ok += 1
+            record = self._image_record(doc_id, node, url, alt, "ok", None, local,
+                                        mime=payload.mime, size=len(payload.data),
+                                        attempts=attempts)
+            record["sha256"] = hashlib.sha256(payload.data).hexdigest()
+            return record
+
+        record = self._image_record(doc_id, node, url, alt, "failed", last_error, None,
+                                    attempts=attempts)
+        self.stats.images_failed += 1
+        self.stats.errors.append(f"图片下载失败（{record['sourceRedacted']}）：{last_error}")
+        return record
+
+    # ---- 报告 --------------------------------------------------------
+
+    def report_text(self) -> str:
+        stats = self.stats
+        lines = [
+            "备份完成" if stats.status == "ok" else "备份部分完成（有失败项，可重跑）",
+            "",
+            f"文件夹：{stats.folders_scanned}",
+            f"文档：{stats.documents_seen}",
+            f"新增文档：{stats.documents_written}",
+            f"更新文档：{stats.documents_updated}",
+            f"未变化文档：{stats.documents_skipped}",
+            f"失败文档：{stats.documents_failed}",
+            f"图片成功：{stats.images_ok}",
+            f"图片失败：{stats.images_failed}",
+            f"链接转换失败：{stats.links_failed}",
+            f"遗留文件：{stats.stale_files}",
+            f"API 请求：{stats.api_requests}",
+            f"图片请求：{stats.asset_requests}",
+            f"API 重试：{stats.retries}",
+            f"限流命中：{stats.rate_limit_hits}",
+            f"耗时：{stats.elapsed_seconds:.1f} 秒",
+        ]
+        if stats.errors:
+            lines.append("")
+            lines.append("需要重试的项目：")
+            lines.extend(f"- {message}" for message in stats.errors[:20])
+        return "\n".join(lines)
+
+    def _write_report(self) -> None:
+        if self.options.dry_run:
+            return
+        payload = {"generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                   "stats": self.stats.as_dict(),
+                   "stale": self.manifest.get("stale", []),
+                   "failedDocuments": [
+                       {"id": doc_id, "path": entry.get("path")}
+                       for doc_id, entry in self.manifest["entries"].items()
+                       if entry.get("status") != "ok"]}
+        atomic_write_text(self.out_dir / REPORT_NAME,
+                          json.dumps(payload, ensure_ascii=False, indent=2))
+
+    # ---- 校验 --------------------------------------------------------
+
+    def verify(self) -> dict[str, Any]:
+        """重新计算哈希，检查文件是否与 manifest 一致。"""
+        missing, mismatched = [], []
+        for doc_id, entry in (self.manifest.get("entries") or {}).items():
+            path = self.out_dir / (entry.get("file") or "")
+            if not path.exists():
+                missing.append({"docId": doc_id, "path": entry.get("file")})
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if entry.get("sha256") and digest != entry["sha256"]:
+                mismatched.append({"docId": doc_id, "path": entry.get("file")})
+        return {"checked": len(self.manifest.get("entries") or {}),
+                "missing": missing, "mismatched": mismatched,
+                "ok": not missing and not mismatched}
+
+
+def load_manifest(out_dir: Path) -> dict[str, Any]:
+    return load_json(Path(out_dir) / MANIFEST_NAME) or {}
+
+
+def verify_backup(out_dir: Path) -> dict[str, Any]:
+    """校验备份目录：文件是否缺失、内容是否与 manifest 里的哈希一致。"""
+    out_dir = Path(out_dir)
+    manifest = load_manifest(out_dir)
+    entries = manifest.get("entries") or {}
+    missing: list[dict[str, Any]] = []
+    mismatched: list[dict[str, Any]] = []
+    for doc_id, entry in entries.items():
+        path = out_dir / (entry.get("file") or "")
+        if not path.exists():
+            missing.append({"docId": doc_id, "path": entry.get("file")})
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if entry.get("sha256") and digest != entry["sha256"]:
+            mismatched.append({"docId": doc_id, "path": entry.get("file")})
+    assets = manifest.get("assets") or {}
+    asset_missing = [
+        {"docId": doc_id, "local": record.get("local")}
+        for doc_id, records in assets.items() for record in records
+        if record.get("status") == "ok" and record.get("local")
+        and not (out_dir / record["local"]).exists()]
+    return {
+        "checkedDocuments": len(entries),
+        "checkedAssets": sum(len(v) for v in assets.values()),
+        "missingDocuments": missing,
+        "mismatchedDocuments": mismatched,
+        "missingAssets": asset_missing,
+        "ok": not (missing or mismatched or asset_missing),
+    }
+
+
+def prune_stale_backup(out_dir: Path, dry_run: bool = True,
+                       progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """把 manifest 里标记的遗留文件移到 _backup_stale/。
+
+    只会处理 manifest 明确记录过、且文件仍然存在的路径；用户手工创建的文件不会被碰。
+    """
+    out_dir = Path(out_dir)
+    manifest = load_manifest(out_dir)
+    stale = manifest.get("stale") or []
+    planned: list[dict[str, str]] = []
+    moved: list[dict[str, str]] = []
+    for item in stale:
+        relative = item.get("path")
+        if not relative:
+            continue
+        source = out_dir / relative
+        if not source.exists():
+            continue
+        destination = out_dir / STALE_DIR / relative
+        planned.append({"path": relative, "target": f"{STALE_DIR}/{relative}"})
+        if dry_run:
+            if progress:
+                progress(f"[将移动] {relative} -> {STALE_DIR}/{relative}")
+            continue
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+            moved.append({"path": relative, "target": f"{STALE_DIR}/{relative}"})
+            if progress:
+                progress(f"[已移动] {relative} -> {STALE_DIR}/{relative}")
+        except OSError as exc:
+            planned.append({"path": relative, "error": str(exc)})
+    return {"dryRun": dry_run, "planned": planned, "moved": moved}
 
 
 def run_backup(client: MubuClient, options: BackupOptions) -> dict[str, Any]:
     return BackupEngine(client, options).run()
-
-
-def clean_output_dir(path: Path) -> None:
-    """仅供测试使用：清掉一个备份目录。"""
-    if path.exists():
-        shutil.rmtree(path, ignore_errors=True)

@@ -79,3 +79,32 @@ deliberately stops at creating new documents.
 | `6` | Permission error (missing or encrypted document, wrong id) |
 | `17` | Illegal request (missing headers, or the endpoint changed) |
 | `1204` | Phone number or password incorrect |
+
+## Node fields still to be confirmed on real documents
+
+The Markdown converter currently relies on fields that **have been observed** (`text`,
+`children`, `note`, `finish`/`checked`) plus a *heuristic* for images and links. The following
+still need to be confirmed against real documents that contain them, using
+`mubu-web-mcp inspect <doc-id>` (which prints field names, counts and URL host names only):
+
+| Content | Status |
+| --- | --- |
+| Image field name(s), order, dimensions, original file name | **unconfirmed** — heuristic: field name containing `img`/`image`/`pic`/`photo`, or a URL ending in an image extension |
+| Attachment field name(s) | unconfirmed |
+| Plain hyperlink field(s) | unconfirmed |
+| Internal document link field(s) and target document id | unconfirmed |
+| Node ordering field | unconfirmed — falls back to the order returned by the listing API |
+| Folder/document ordering field | partially confirmed: `seq` is used when present |
+| Tables / formulas / tags / due dates / highlights | unconfirmed |
+
+Until these are confirmed, `--assets` downloads only `*.mubu.com` URLs that look like images,
+and anything unrecognised is reported as a limitation rather than silently dropped.
+
+## Asset download security (implemented)
+
+* HTTPS only; `http://`, usernames/passwords in the URL and non-443 ports are refused.
+* Host must be `mubu.com` or `*.mubu.com`; lookalikes such as `mubu.com.example.com` or
+  `notmubu.com` are refused.
+* Redirects are followed manually, one hop at a time, with the target validated before the
+  next request; the `Jwt-Token` header is only attached to allowed hosts.
+* Maximum size, timeout and redirect count are bounded; non-image MIME types are rejected.
