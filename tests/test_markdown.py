@@ -189,7 +189,14 @@ class TreeToMarkdownTests(unittest.TestCase):
     def test_tree_to_markdown_without_resolver_is_unchanged(self):
         tree = {"nodes": [{"text": "T", "children": [
             {"id": "n1", "text": "A", "children": []}]}]}
-        self.assertEqual(mubu_markdown.tree_to_markdown(tree), "# T\n- A")
+        self.assertEqual(mubu_markdown.tree_to_markdown(tree), "# T\n\n- A")
+
+    def test_title_from_document_name(self):
+        """给了 title 就用文档名做标题，第一个节点作为正文（与官方导出一致）。"""
+        tree = {"nodes": [{"text": "作业思考", "children": []}]}
+        out = mubu_markdown.tree_to_markdown(tree, title="🧭2.项目/钱/工作")
+        self.assertEqual(out.splitlines()[0], "# 🧭2.项目/钱/工作")
+        self.assertIn("- 作业思考", out)
 
     def test_renders_notes_and_checkboxes(self):
         tree = {"nodes": [{
@@ -215,8 +222,9 @@ class TreeToMarkdownTests(unittest.TestCase):
         # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
         sample = (
             "# 产品周会\n"
+            "\n"
             "- 上周进展\n"
-            "  > 备注：记得同步给设计团队\n"
+            "> 备注：记得同步给设计团队\n"
             "  - [x] 上线新版本\n"
             "  - [ ] 修复登录 bug\n"
             "- 本周计划\n"

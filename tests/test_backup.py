@@ -434,7 +434,7 @@ class BackupEngineTests(unittest.TestCase):
         self.assertEqual((assets_dir / "001.png").read_bytes(), b"PNGDATA")
         self.assertTrue((assets_dir / "assets.json").exists())
         # 图片出现在对应节点位置（紧随该节点，且在该节点子节点之前）
-        self.assertLess(content.index("![image-1]"), content.index("# 第二节"))
+        self.assertLess(content.index("![image-1]"), content.index("- 第二节"))
         record = manifest["assets"]["d1"][0]
         self.assertEqual(record["sourceHost"], "api2.mubu.com")
 

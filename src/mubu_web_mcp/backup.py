@@ -639,7 +639,7 @@ class BackupEngine:
                 asset_records, self.options.image_fields)
 
         markdown = mubu_markdown.tree_to_markdown(
-            tree, image_resolver=resolver, link_resolver=resolve_link)
+            tree, image_resolver=resolver, link_resolver=resolve_link, title=name)
         atomic_write_text(target, markdown if markdown.endswith("\n") else markdown + "\n")
 
         ok_images = sum(1 for a in asset_records if a["status"] == "ok")

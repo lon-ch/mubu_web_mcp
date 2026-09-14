@@ -92,8 +92,24 @@ def html_to_markdown(text: Any) -> str:
         return f"\x00{len(tables) - 1}\x00"
 
     result = _TABLE_RE.sub(stash, raw)
-    result = _ANCHOR_RE.sub(
-        lambda m: f"[{_plain_text(m.group(2))}]({m.group(1)})", result)
+
+    def anchor(match: re.Match) -> str:
+        href = match.group(1)
+        label = html_to_markdown(match.group(2)).strip()
+        # 链接文字就是地址本身时用 <地址> 自动链接（与官方导出一致）
+        if not label or label == href:
+            return f"<{href}>"
+        return f"[{label}]({href})"
+
+    result = _ANCHOR_RE.sub(anchor, result)
+
+    # 真实数据里的加粗/斜体是 span + style，而不是 <b>/<i>
+    result = re.sub(r"<span[^>]*font-weight:\s*(?:bold|[6-9]00)[^>]*>([\s\S]*?)</span>",
+                    r"**\1**", result, flags=re.IGNORECASE)
+    result = re.sub(r"<span[^>]*font-style:\s*italic[^>]*>([\s\S]*?)</span>",
+                    r"*\1*", result, flags=re.IGNORECASE)
+    result = re.sub(r"<span[^>]*line-through[^>]*>([\s\S]*?)</span>",
+                    r"~~\1~~", result, flags=re.IGNORECASE)
     for pattern, replacement in _INLINE_REPLACEMENTS:
         result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     result = _html.unescape(result).replace("\xa0", " ")
@@ -215,7 +231,7 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
         lines.append(f"{indent}{metadata}")
     # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
     _emit_notes(rewrite_mubu_links(node.get("note") or "", link_resolver),
-                "  " * (level + 1), lines)
+                indent, lines)
     if image_resolver is not None:
         _emit_images(image_resolver(node), indent, lines)
     for child in node.get("children") or []:
@@ -223,7 +239,7 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
 
 
 def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None,
-                     link_resolver: Any = None) -> str:
+                     link_resolver: Any = None, title: str | None = None) -> str:
     """把幕布文档结构渲染成 Markdown。
 
     ``image_resolver`` 由 :func:`make_image_resolver` 提供；不传则完全保持旧行为。
@@ -235,11 +251,19 @@ def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None,
         else:
             return ""
     lines: list[str] = []
+    if title:
+        # 官方导出用文档名做标题，第一个节点作为正文
+        lines.append(f"# {_clean(html_to_markdown(title))}")
+        lines.append("")
+        for node in nodes:
+            _node_to_markdown(node, 0, lines, image_resolver, link_resolver)
+        return "\n".join(lines)
     for node in nodes:
         title = _clean(html_to_markdown(node.get("text")).splitlines()[0]
                        if html_to_markdown(node.get("text")).strip() else "")
         if title:
             lines.append(f"# {title}")
+            lines.append("")
         metadata = _task_metadata(node)
         if metadata:
             lines.append(metadata)
@@ -312,9 +336,9 @@ def markdown_to_tree(markdown: str, title: str | None = None) -> dict[str, Any]:
         note = _NOTE.match(raw)
         if note:
             depth = len(note.group(1)) // 2
-            # 官方导出的备注比所属节点深一级
-            target = (node_at(depth - 1) or node_at(depth)
-                      or deepest_up_to(depth) or (top[-1] if top else None))
+            # 备注与所属节点同级缩进（官方导出约定）
+            target = (node_at(depth) or deepest_up_to(depth)
+                      or (top[-1] if top else None))
             if target is not None:
                 target["note"] = note.group(2).strip()
             continue
