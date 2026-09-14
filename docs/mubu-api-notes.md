@@ -97,6 +97,42 @@ still need to be confirmed against real documents that contain them, using
 | Folder/document ordering field | partially confirmed: `seq` is used when present |
 | Tables / formulas / tags / due dates / highlights | unconfirmed |
 
+### Confirmed on a real document (2026-09-14, id `4j2uZVnAC4l`)
+
+Node fields actually returned by `get_doc` for an outline with an image, a note and a task:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | str (10 chars) | node id |
+| `text` | str | node body (may be long; one child had 824 chars) |
+| `children` | list | nested nodes |
+| `note` | str | node note — **confirmed** |
+| `images` | list[dict] | image attachments on that node |
+| `collapsed` | bool | collapsed state |
+| `deadline` | int (ms) | due date, `0` when unset |
+| `remindAt` | int (ms) | reminder time, `0` when unset |
+| `taskStatus` | int | task state (`0` = open) |
+| `modified` | int (ms) | last modification timestamp |
+| `idx` | int | ordering index (seen in the redacted structure report) |
+
+Image entry structure — one dict per image, order preserved:
+
+```json
+{"id": "UtYC56OetU", "uri": "document_image/5693973_2ffa166b-02c2-46e8-d3a9-7a4a29d1ee03.png",
+ "w": 66, "ow": 800, "oh": 800}
+```
+
+* `uri` is a **relative path**, not an absolute URL, and it embeds the uploader's user id.
+* `w` is the display width; `ow`/`oh` are the original dimensions.
+* Downloading: `https://api2.mubu.com/v3/<uri>` returns the image
+  (`200 image/png`, PNG magic bytes) when the `Jwt-Token` header is present.
+  `https://mubu.com/<uri>` also works; `https://assets.mubu.com/<uri>` returns 404.
+  Both working hosts are covered by the `*.mubu.com` asset whitelist.
+
+Implementation still to do (0.4.0): read images from the `images` field instead of guessing by
+field name / URL suffix, build `<API origin>/<uri>`, keep `w`/`ow`/`oh` in `assets.json`, and map
+`deadline` / `remindAt` / `taskStatus` / `collapsed` into Markdown metadata.
+
 Until these are confirmed, `--assets` downloads only `*.mubu.com` URLs that look like images,
 and anything unrecognised is reported as a limitation rather than silently dropped.
 

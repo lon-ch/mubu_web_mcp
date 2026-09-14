@@ -410,36 +410,40 @@ class BackupEngineTests(unittest.TestCase):
 
     # ---- 图片 ----
 
-    def with_image(self, url="https://assets.mubu.com/a/pic.png", field="img"):
+    def with_image(self, uri="document_image/1_abc.png", field="images"):
+        entry = {"id": "i1", "uri": uri, "w": 66, "ow": 800, "oh": 800}
         self.docs["d1"] = definition(
-            ("会议记录", [], {field: url}),
+            ("会议记录", [], {field: [entry]}),
             ("第二节", ["子节点"]))
 
     def test_images_downloaded_into_assets_dir_and_linked(self):
         self.with_image()
         with mock.patch.object(backup, "fetch_asset",
                                return_value=backup.AssetPayload(
-                                   b"PNGDATA", "image/png", "https://assets.mubu.com/a/pic.png")):
+                                   b"PNGDATA", "image/png",
+                                   "https://api2.mubu.com/v3/document_image/1_abc.png")):
             stats = backup.run_backup(self.client, self.options(download_assets=True))
         self.assertEqual(stats["imagesOk"], 1)
         manifest = json.loads((self.out / backup.MANIFEST_NAME).read_text(encoding="utf-8"))
         entry = manifest["entries"]["d1"]
         content = (self.out / entry["file"]).read_text(encoding="utf-8")
-        self.assertIn("![图片001](", content)
+        self.assertIn("![image-1](", content)
         self.assertIn(".assets/001.png", content)
         assets_dir = (self.out / entry["file"]).with_name(
             Path(entry["file"]).stem + backup.ASSETS_SUFFIX)
         self.assertEqual((assets_dir / "001.png").read_bytes(), b"PNGDATA")
         self.assertTrue((assets_dir / "assets.json").exists())
         # 图片出现在对应节点位置（紧随该节点，且在该节点子节点之前）
-        self.assertLess(content.index("![图片001]"), content.index("# 第二节"))
+        self.assertLess(content.index("![image-1]"), content.index("# 第二节"))
+        record = manifest["assets"]["d1"][0]
+        self.assertEqual(record["sourceHost"], "api2.mubu.com")
 
     def test_non_image_content_is_not_saved_as_image(self):
         self.with_image()
         with mock.patch.object(backup, "fetch_asset",
                                return_value=backup.AssetPayload(
                                    b"<html>error</html>", "text/html",
-                                   "https://assets.mubu.com/a/pic.png")):
+                                   "https://api2.mubu.com/v3/document_image/1_abc.png")):
             stats = backup.run_backup(self.client, self.options(download_assets=True))
         self.assertEqual(stats["imagesOk"], 0)
         self.assertEqual(stats["imagesFailed"], 1)
@@ -457,7 +461,7 @@ class BackupEngineTests(unittest.TestCase):
         self.assertIn("图片备份失败", next(self.out.rglob("*.md")).read_text(encoding="utf-8"))
 
     def test_foreign_image_url_is_blocked_without_request(self):
-        self.with_image(url="https://evil.example.com/pic.png")
+        self.with_image(uri="https://evil.example.com/pic.png")
         with mock.patch.object(backup, "fetch_asset") as fetcher:
             stats = backup.run_backup(self.client, self.options(download_assets=True))
         fetcher.assert_not_called()
@@ -471,29 +475,33 @@ class BackupEngineTests(unittest.TestCase):
 
     def test_same_image_reused_within_document(self):
         self.docs["d1"] = definition(
-            ("A", [], {"img": "https://assets.mubu.com/a.png"}),
-            ("B", [], {"img": "https://assets.mubu.com/a.png"}))
+            ("A", [], {"images": [{"id": "i1", "uri": "document_image/1_same.png"}]}),
+            ("B", [], {"images": [{"id": "i2", "uri": "document_image/1_same.png"}]}))
         with mock.patch.object(backup, "fetch_asset",
                                return_value=backup.AssetPayload(
-                                   b"P", "image/png", "https://assets.mubu.com/a.png")) as fetcher:
+                                   b"P", "image/png",
+                                   "https://api2.mubu.com/v3/document_image/1_same.png")) as fetcher:
             stats = backup.run_backup(self.client, self.options(download_assets=True))
         self.assertEqual(fetcher.call_count, 1)
         self.assertEqual(stats["imagesSkipped"], 1)
         self.assertEqual(len(list(self.out.rglob("*.png"))), 1)
 
     def test_image_field_option_restricts_matching(self):
-        self.docs["d1"] = definition(("A", [], {"pictureUrl": "https://assets.mubu.com/a.png",
-                                                "img": "https://assets.mubu.com/b.png"}))
+        self.docs["d1"] = definition(("A", [], {
+            "images": [{"id": "i1", "uri": "document_image/1_a.png"}],
+            "customImage": [{"id": "i2", "uri": "document_image/1_b.png"}]}))
         with mock.patch.object(backup, "fetch_asset",
                                return_value=backup.AssetPayload(
-                                   b"P", "image/png", "https://assets.mubu.com/a.png")) as fetcher:
-            backup.run_backup(self.client, self.options(download_assets=True,
-                                                        image_fields=("img",)))
-        self.assertEqual(fetcher.call_count, 1)
-        self.assertIn("b.png", fetcher.call_args[0][0])
+                                   b"P", "image/png",
+                                   "https://api2.mubu.com/v3/document_image/1_a.png")) as fetcher:
+            backup.run_backup(self.client, self.options(
+                download_assets=True, image_fields=("customImage",)))
+        urls = [call[0][0] for call in fetcher.call_args_list]
+        self.assertEqual(len(urls), 2)          # images + 指定字段
+        self.assertTrue(any("1_b.png" in url for url in urls))
 
     def test_link_fields_are_not_treated_as_images(self):
-        self.docs["d1"] = definition(("A", [], {"link": "https://assets.mubu.com/page.png"}))
+        self.docs["d1"] = definition(("A", [], {"link": "https://api2.mubu.com/v3/document_image/x.png"}))
         with mock.patch.object(backup, "fetch_asset") as fetcher:
             backup.run_backup(self.client, self.options(download_assets=True))
         fetcher.assert_not_called()

@@ -87,7 +87,7 @@ class TreeToMarkdownTests(unittest.TestCase):
         self.assertIn("> 第一段", text)
         self.assertIn("> ", text)
         self.assertIn("> 第二段", text)
-        quoted = [line for line in text.splitlines() if line.startswith(">")]
+        quoted = [line for line in text.splitlines() if line.strip().startswith(">")]
         self.assertEqual(len(quoted), 3)
 
     def test_ordered_list_marker_when_flagged(self):
@@ -124,12 +124,13 @@ class TreeToMarkdownTests(unittest.TestCase):
         self.assertIn("# T", text)
 
     def test_round_trip_is_stable(self):
+        # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
         sample = (
             "# 产品周会\n"
             "- 上周进展\n"
+            "  > 备注：记得同步给设计团队\n"
             "  - [x] 上线新版本\n"
             "  - [ ] 修复登录 bug\n"
-            "> 备注：记得同步给设计团队\n"
             "- 本周计划\n"
             "  - 性能优化\n"
         )

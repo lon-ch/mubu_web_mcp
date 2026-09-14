@@ -59,7 +59,7 @@ def _emit_images(images: list[dict[str, Any]] | None, indent: str,
                  lines: list[str]) -> None:
     for position, image in enumerate(images or [], start=1):
         if image.get("status") == "ok" and image.get("local"):
-            alt = _clean(image.get("alt")) or f"图片{position:03d}"
+            alt = _clean(image.get("alt")) or f"image-{position}"
             lines.append(f"{indent}![{alt}]({image['local']})")
         else:
             lines.append(f"{indent}> 图片备份失败：原始图片地址已记录在备份清单中。")
@@ -82,11 +82,12 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
     else:
         lines.append(f"{indent}{marker} [{'x' if checked else ' '}] "
                      f"{_clean(node.get('text'))}")
+    # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
+    _emit_notes(node.get("note"), "  " * (level + 1), lines)
     if image_resolver is not None:
-        _emit_images(image_resolver(node), "  " * (level + 1), lines)
+        _emit_images(image_resolver(node), indent, lines)
     for child in node.get("children") or []:
         _node_to_markdown(child, level + 1, lines, image_resolver)
-    _emit_notes(node.get("note"), indent, lines)
 
 
 def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None) -> str:
@@ -105,11 +106,11 @@ def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None) -> str:
         title = _clean(node.get("text"))
         if title:
             lines.append(f"# {title}")
+        _emit_notes(node.get("note"), "  ", lines)
         if image_resolver is not None:
             _emit_images(image_resolver(node), "", lines)
         for child in node.get("children") or []:
             _node_to_markdown(child, 0, lines, image_resolver)
-        _emit_notes(node.get("note"), "", lines)
     return "\n".join(lines)
 
 
@@ -174,7 +175,9 @@ def markdown_to_tree(markdown: str, title: str | None = None) -> dict[str, Any]:
         note = _NOTE.match(raw)
         if note:
             depth = len(note.group(1)) // 2
-            target = node_at(depth) or deepest_up_to(depth) or (top[-1] if top else None)
+            # 官方导出的备注比所属节点深一级
+            target = (node_at(depth - 1) or node_at(depth)
+                      or deepest_up_to(depth) or (top[-1] if top else None))
             if target is not None:
                 target["note"] = note.group(2).strip()
             continue

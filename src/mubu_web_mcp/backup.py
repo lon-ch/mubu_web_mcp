@@ -47,6 +47,11 @@ ALLOWED_ASSET_SCHEME = "https"
 ASSET_HOST_SUFFIXES = (".mubu.com",)
 ASSET_BARE_HOST = "mubu.com"
 
+# 图片在 definition 里存的是相对路径（document_image/<user>_<uuid>.<ext>），
+# 官方导出的地址就是把 uri 拼到这个前缀后面（实测返回 image/png）。
+IMAGE_URL_PREFIX = "https://api2.mubu.com/v3/"
+IMAGE_PATH_PREFIX = "document_image/"
+
 MAX_REDIRECTS = 5
 DEFAULT_MAX_ASSET_BYTES = 20 * 1024 * 1024
 
@@ -155,6 +160,21 @@ def is_allowed_asset_url(url: str) -> bool:
     if not host:
         return False
     return host == ASSET_BARE_HOST or host.endswith(ASSET_HOST_SUFFIXES)
+
+
+def build_image_url(uri: str) -> str:
+    """把 definition 里的相对 uri 变成可下载的绝对地址。"""
+    uri = str(uri or "").lstrip("/")
+    return IMAGE_URL_PREFIX + uri
+
+
+def is_allowed_image_url(url: str) -> bool:
+    """图片地址还要额外限制路径前缀，避免拿任意路径去试探接口。"""
+    if not is_allowed_asset_url(url):
+        return False
+    path = urllib.parse.urlsplit(url).path.lstrip("/")
+    # 允许 <host>/<prefix>… 与 <host>/v3/<prefix>…
+    return path.startswith(IMAGE_PATH_PREFIX) or f"/{IMAGE_PATH_PREFIX}" in f"/{path}"
 
 
 def redact_url(url: str, digest_length: int = 8) -> str:
@@ -612,35 +632,39 @@ class BackupEngine:
             yield from self._iter_nodes(nodes.get("children") or [])
 
     def _image_urls_of(self, node: dict[str, Any]) -> list[tuple[str, str]]:
-        """返回 (url, 说明) 列表，保持节点内的原始顺序。"""
-        explicit = set(self.options.image_fields)
+        """返回 (url, 说明) 列表，保持节点内的原始顺序。
+
+        真实结构（已在真实文档上确认）：``images: [{"id", "uri", "w", "ow", "oh"}]``，
+        其中 ``uri`` 是相对路径 ``document_image/<user>_<uuid>.<ext>``，需要拼成绝对地址。
+        ``--image-field`` 可指定额外候选字段名，兼容其它形态。
+        """
         found: list[tuple[str, str]] = []
 
-        def looks_like_image(key: str, url: str) -> bool:
-            if explicit:
-                return key in explicit
-            if any(hint in key.lower() for hint in LINK_FIELD_HINTS):
-                return False
-            if any(hint in key.lower() for hint in IMAGE_FIELD_HINTS):
-                return True
-            return url.split("?")[0].lower().endswith(IMAGE_EXTENSIONS)
+        def from_entry(entry: Any) -> None:
+            if isinstance(entry, dict):
+                uri = entry.get("uri") or entry.get("url") or entry.get("src")
+                if uri:
+                    uri = str(uri)
+                    alt = str(entry.get("name") or entry.get("alt") or "")
+                    found.append((uri if "://" in uri else build_image_url(uri), alt))
+            elif isinstance(entry, str) and entry:
+                found.append(
+                    (entry if "://" in entry else build_image_url(entry), ""))
 
-        def walk(value: Any, key: str, alt: str = "") -> None:
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                if looks_like_image(key, value):
-                    found.append((value, alt))
-            elif isinstance(value, dict):
-                alt = str(value.get("name") or value.get("alt") or value.get("desc") or alt)
-                for sub_key, sub_value in value.items():
-                    walk(sub_value, sub_key, alt)
-            elif isinstance(value, list):
-                for item in value:
-                    walk(item, key, alt)
+        entries = node.get("images")
+        if isinstance(entries, list):
+            for entry in entries:
+                from_entry(entry)
+        elif entries:
+            from_entry(entries)
 
-        for key, value in node.items():
-            if key == "children":
-                continue
-            walk(value, key)
+        for field in self.options.image_fields:
+            value = node.get(field)
+            if isinstance(value, list):
+                for entry in value:
+                    from_entry(entry)
+            elif value:
+                from_entry(value)
         return found
 
     def _download_images(self, doc_id: str, tree: dict[str, Any],
