@@ -196,7 +196,8 @@ class TreeToMarkdownTests(unittest.TestCase):
         tree = {"nodes": [{"text": "作业思考", "children": []}]}
         out = mubu_markdown.tree_to_markdown(tree, title="🧭2.项目/钱/工作")
         self.assertEqual(out.splitlines()[0], "# 🧭2.项目/钱/工作")
-        self.assertIn("- 作业思考", out)
+        self.assertIn("作业思考", out)          # 首节点文字作为段落，不带列表标记
+        self.assertNotIn("- 作业思考", out)
 
     def test_renders_notes_and_checkboxes(self):
         tree = {"nodes": [{
@@ -224,7 +225,7 @@ class TreeToMarkdownTests(unittest.TestCase):
             "# 产品周会\n"
             "\n"
             "- 上周进展\n"
-            "> 备注：记得同步给设计团队\n"
+            "  > 备注：记得同步给设计团队\n"
             "  - [x] 上线新版本\n"
             "  - [ ] 修复登录 bug\n"
             "- 本周计划\n"

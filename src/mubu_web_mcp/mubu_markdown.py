@@ -231,7 +231,7 @@ def _node_to_markdown(node: dict[str, Any], level: int, lines: list[str],
         lines.append(f"{indent}{metadata}")
     # 官方导出约定：备注紧跟节点行、缩进深一级，然后才是子节点
     _emit_notes(rewrite_mubu_links(node.get("note") or "", link_resolver),
-                indent, lines)
+                indent + "  ", lines)
     if image_resolver is not None:
         _emit_images(image_resolver(node), indent, lines)
     for child in node.get("children") or []:
@@ -252,11 +252,33 @@ def tree_to_markdown(tree: dict[str, Any], image_resolver: Any = None,
             return ""
     lines: list[str] = []
     if title:
-        # 官方导出用文档名做标题，第一个节点作为正文
+        # 官方导出：文档名做 H1；第一个节点只输出文字（作为段落），
+        # 它的子节点提升到第 0 层；其余顶层节点各成一个 H1 小节。
         lines.append(f"# {_clean(html_to_markdown(title))}")
         lines.append("")
-        for node in nodes:
-            _node_to_markdown(node, 0, lines, image_resolver, link_resolver)
+
+        def emit_children(node: dict[str, Any]) -> None:
+            _emit_notes(rewrite_mubu_links(node.get("note") or "", link_resolver),
+                        "", lines)
+            metadata = _task_metadata(node)
+            if metadata:
+                lines.append(metadata)
+            if image_resolver is not None:
+                _emit_images(image_resolver(node), "", lines)
+            for child in node.get("children") or []:
+                _node_to_markdown(child, 0, lines, image_resolver, link_resolver)
+
+        first_text = html_to_markdown(nodes[0].get("text")).strip()
+        if first_text:
+            lines.append(rewrite_mubu_links(first_text, link_resolver))
+        emit_children(nodes[0])
+        for node in nodes[1:]:
+            heading = html_to_markdown(node.get("text")).strip()
+            lines.append("")
+            lines.append(f"# {rewrite_mubu_links(heading.splitlines()[0], link_resolver)}"
+                         if heading else "")
+            lines.append("")
+            emit_children(node)
         return "\n".join(lines)
     for node in nodes:
         title = _clean(html_to_markdown(node.get("text")).splitlines()[0]
