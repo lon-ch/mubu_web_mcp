@@ -91,6 +91,24 @@ class TreeToMarkdownTests(unittest.TestCase):
     def test_entities_are_unescaped(self):
         self.assertEqual(mubu_markdown.html_to_markdown("a &amp; b&nbsp;c"), "a & b c")
 
+    def test_bold_from_class(self):
+        """真实数据里加粗是 class，而不是 <b> 或 font-weight。"""
+        self.assertEqual(
+            mubu_markdown.html_to_markdown('<span class="bold text-color-green">加粗</span>'),
+            "**加粗**")
+        self.assertEqual(mubu_markdown.html_to_markdown('<span class="bold">纯加粗</span>'),
+                         "**纯加粗**")
+
+    def test_plain_span_class_is_unwrapped(self):
+        """颜色/高亮没有 Markdown 对应语法，保留文字、去掉样式。"""
+        self.assertEqual(
+            mubu_markdown.html_to_markdown('<span class="highlight-yellow">高亮</span>'),
+            "高亮")
+
+    def test_zero_width_space_removed(self):
+        """官方导出会清掉零宽空格，我们也要清。"""
+        self.assertEqual(mubu_markdown.html_to_markdown("a\u200bb"), "ab")
+
     def test_table_node_is_emitted_as_block_without_bullet(self):
         tree = {"nodes": [{"text": "T", "children": [
             {"id": "n1", "text": "<table><tr><th>A</th></tr><tr><td>1</td></tr></table>"}]}]}

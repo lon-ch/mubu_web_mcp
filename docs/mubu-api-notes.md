@@ -97,7 +97,7 @@ still need to be confirmed against real documents that contain them, using
 | Folder/document ordering field | partially confirmed: `seq` is used when present |
 | Tables / formulas / tags / due dates / highlights | unconfirmed |
 
-### Confirmed on a real document (2026-09-14, id `4j2uZVnAC4l`)
+### Confirmed on a real document (2026-09-14, id `<doc-id>`)
 
 Node fields actually returned by `get_doc` for an outline with an image, a note and a task:
 
@@ -118,7 +118,7 @@ Node fields actually returned by `get_doc` for an outline with an image, a note 
 Image entry structure — one dict per image, order preserved:
 
 ```json
-{"id": "UtYC56OetU", "uri": "document_image/5693973_2ffa166b-02c2-46e8-d3a9-7a4a29d1ee03.png",
+{"id": "UtYC56OetU", "uri": "document_image/<user-id>_2ffa166b-02c2-46e8-d3a9-7a4a29d1ee03.png",
  "w": 66, "ow": 800, "oh": 800}
 ```
 

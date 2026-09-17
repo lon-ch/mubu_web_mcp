@@ -83,7 +83,8 @@ def html_to_markdown(text: Any) -> str:
 
     raw = str(text or "")
     if "<" not in raw:
-        return _html.unescape(raw).replace("\xa0", " ")
+        return (_html.unescape(raw).replace("\xa0", " ")
+                .replace("\u200b", ""))
 
     tables: list[str] = []
 
@@ -110,9 +111,16 @@ def html_to_markdown(text: Any) -> str:
                     r"*\1*", result, flags=re.IGNORECASE)
     result = re.sub(r"<span[^>]*line-through[^>]*>([\s\S]*?)</span>",
                     r"~~\1~~", result, flags=re.IGNORECASE)
+    # 更常见的形式其实是 class：<span class="bold text-color-green">…</span>
+    result = re.sub(r'<span[^>]*class="[^"]*\bbold\b[^"]*"[^>]*>([\s\S]*?)</span>',
+                    r"**\1**", result, flags=re.IGNORECASE)
+    result = re.sub(r'<span[^>]*class="[^"]*\bitalic\b[^"]*"[^>]*>([\s\S]*?)</span>',
+                    r"*\1*", result, flags=re.IGNORECASE)
     for pattern, replacement in _INLINE_REPLACEMENTS:
         result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-    result = _html.unescape(result).replace("\xa0", " ")
+    result = (_html.unescape(result)
+              .replace("\xa0", " ")
+              .replace("\u200b", ""))  # 零宽空格：官方导出会清掉
     for index, table in enumerate(tables):
         result = result.replace(f"\x00{index}\x00", table)
     return result

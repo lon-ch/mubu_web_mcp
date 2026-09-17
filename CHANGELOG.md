@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
+Aligned with Mubu's own export using four real documents as references.
+
+### Added
+
+- **Bold/italic detection by CSS class** — real documents express emphasis as
+  `<span class="bold text-color-green">…</span>`, not `<b>`/`<strong>` or `font-weight`
+  (verified: 0 occurrences of `font-weight`/`<b>` across 314 nodes, 30+ occurrences of
+  `class="bold"`). Colour/highlight classes are unwrapped, since Markdown has no equivalent.
+- Zero-width spaces (U+200B, 17 occurrences in one reference document) are stripped, matching
+  the official export.
+- Title now comes from the **document name**, the first node is emitted as a paragraph, its
+  children are promoted to level 0, and further top-level nodes become `#` sections.
+- Notes are indented to align with the node's text column (`- ` items get +2, the leading
+  paragraph gets 0).
+
+### Notes
+
+- Document/account identifiers were removed from `docs/mubu-api-notes.md` (replaced with
+  `<doc-id>` / `<user-id>`) before the repository was made public. No personal notes,
+  tokens, credentials or exported documents are tracked in this repository.
+
 ## [0.5.0] - 2026-09-14
 
 ### Added
